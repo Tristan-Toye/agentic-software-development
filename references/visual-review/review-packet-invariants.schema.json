@@ -1,0 +1,113 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "review-packet-invariants",
+  "description": "Invariants and pre-mortem failure modes. Each item is anchored (path:line that exists, or a test id) or labelled speculative.",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "producer",
+    "dossier"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string"
+    },
+    "producer": {
+      "type": "string",
+      "enum": [
+        "invariants"
+      ]
+    },
+    "dossier": {
+      "type": "string"
+    },
+    "skipped": {
+      "type": "string",
+      "description": "present instead of the data when the producer could not run; the packet never blocks"
+    },
+    "summary": {
+      "type": "object",
+      "properties": {
+        "items": {
+          "type": "integer"
+        },
+        "invariants": {
+          "type": "integer"
+        },
+        "failure_modes": {
+          "type": "integer"
+        },
+        "speculative": {
+          "type": "integer"
+        },
+        "authored": {
+          "type": "integer"
+        }
+      }
+    },
+    "rule": {
+      "type": "string"
+    },
+    "items": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "id",
+          "kind",
+          "text",
+          "anchor",
+          "speculative",
+          "source"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "invariant",
+              "failure_mode"
+            ]
+          },
+          "text": {
+            "type": "string"
+          },
+          "anchor": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "path:line, or a test id"
+          },
+          "speculative": {
+            "type": "boolean"
+          },
+          "source": {
+            "type": "string",
+            "enum": [
+              "promise-checklist",
+              "contract-prose",
+              "review-signals",
+              "authored"
+            ]
+          },
+          "check": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "anchor_problem": {
+            "type": "string"
+          }
+        }
+      }
+    }
+  },
+  "x-required-unless-skipped": [
+    "summary",
+    "items"
+  ]
+}

@@ -1,0 +1,129 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "review-packet-reading-order",
+  "description": "Contract first, then the riskiest work package, then the rest grouped by relatedness and ranked by diff size, with an explicit not-listed count.",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "producer",
+    "dossier"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string"
+    },
+    "producer": {
+      "type": "string",
+      "enum": [
+        "reading-order"
+      ]
+    },
+    "dossier": {
+      "type": "string"
+    },
+    "skipped": {
+      "type": "string",
+      "description": "present instead of the data when the producer could not run; the packet never blocks"
+    },
+    "base": {
+      "type": "string"
+    },
+    "head": {
+      "type": "string"
+    },
+    "listed_files": {
+      "type": "integer"
+    },
+    "total_changed_files": {
+      "type": "integer"
+    },
+    "order": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "rank",
+          "group",
+          "reason",
+          "files"
+        ],
+        "properties": {
+          "rank": {
+            "type": "integer"
+          },
+          "group": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "files": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "path"
+              ],
+              "properties": {
+                "path": {
+                  "type": "string"
+                },
+                "added": {
+                  "type": "integer"
+                },
+                "deleted": {
+                  "type": "integer"
+                },
+                "signals": {
+                  "type": "integer"
+                },
+                "callers": {
+                  "type": "integer"
+                },
+                "why": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "not_listed": {
+      "type": "object",
+      "required": [
+        "count"
+      ],
+      "properties": {
+        "count": {
+          "type": "integer"
+        },
+        "over_cap": {
+          "type": "integer"
+        },
+        "noise": {
+          "type": "integer"
+        },
+        "noise_rule": {
+          "type": "string"
+        },
+        "paths": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "inputs": {
+      "type": "object"
+    },
+    "caution": {
+      "type": "string"
+    }
+  },
+  "x-required-unless-skipped": [
+    "order",
+    "not_listed"
+  ]
+}

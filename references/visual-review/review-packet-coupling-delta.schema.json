@@ -1,0 +1,178 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "review-packet-coupling-delta",
+  "description": "New and removed depends edges, new cycles and layer breaks from the vr_diff merged graph.",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "producer",
+    "dossier"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string"
+    },
+    "producer": {
+      "type": "string",
+      "enum": [
+        "coupling-delta"
+      ]
+    },
+    "dossier": {
+      "type": "string"
+    },
+    "skipped": {
+      "type": "string",
+      "description": "present instead of the data when the producer could not run; the packet never blocks"
+    },
+    "graph": {
+      "type": "string"
+    },
+    "summary": {
+      "type": "object",
+      "properties": {
+        "added": {
+          "type": "integer"
+        },
+        "removed": {
+          "type": "integer"
+        },
+        "new_cycles": {
+          "type": "integer"
+        },
+        "layer_breaks": {
+          "type": "integer"
+        }
+      }
+    },
+    "added": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "from",
+          "to"
+        ],
+        "properties": {
+          "from": {
+            "type": "string"
+          },
+          "to": {
+            "type": "string"
+          },
+          "anchor": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "path:line, or a test id"
+          }
+        }
+      }
+    },
+    "removed": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "from",
+          "to"
+        ],
+        "properties": {
+          "from": {
+            "type": "string"
+          },
+          "to": {
+            "type": "string"
+          },
+          "anchor": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "path:line, or a test id"
+          }
+        }
+      }
+    },
+    "new_cycles": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "nodes"
+        ],
+        "properties": {
+          "nodes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    },
+    "layer_breaks": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "from",
+          "to",
+          "from_layer",
+          "to_layer"
+        ],
+        "properties": {
+          "from": {
+            "type": "string"
+          },
+          "to": {
+            "type": "string"
+          },
+          "from_layer": {
+            "type": "string"
+          },
+          "to_layer": {
+            "type": "string"
+          },
+          "new": {
+            "type": "boolean"
+          },
+          "anchor": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "path:line, or a test id"
+          }
+        }
+      }
+    },
+    "layers": {
+      "type": "object",
+      "properties": {
+        "status": {
+          "type": "string",
+          "enum": [
+            "ran",
+            "skipped"
+          ]
+        }
+      }
+    },
+    "fan_changes": {
+      "type": "array"
+    },
+    "coverage": {
+      "type": "string"
+    }
+  },
+  "x-required-unless-skipped": [
+    "summary",
+    "added",
+    "removed",
+    "new_cycles",
+    "layer_breaks",
+    "layers"
+  ]
+}
