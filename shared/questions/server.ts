@@ -16,6 +16,7 @@ import { join } from "node:path"
 import { pendingSlack, readRunThreadAsync, runSlackEnabled, runsWatchIgnored, threadChanged, writeRunThread } from "./runslack.ts"
 import { startLagWatch } from "./lagwatch.ts"
 import { archStemOf, collapsedView, hasVisualReview, visualReview, vrDir } from "./vrlayout.ts"
+import { hasPacket, packetCache, packetDir, packetSignature, readPacket } from "./packet.ts"
 import { makeVrCache, vrSignature } from "./vrcache.ts"
 import { approveAll, buildAnswer, diagramsOf, dossierIntent, MAX_BODY, ReviewError, isReviewQuestion, reviewOptions, reviewState, setVerdict } from "./vrreview.ts"
 import { collapsedDiagram, DiagramError, mapStatus, openDiagram } from "./vrmap.ts"
@@ -486,6 +487,18 @@ export async function handle(req: Request): Promise<Response> {
     const plans = planRuns(runs)
     const accounts = readAccounts([...runs.filter((r) => runnerActive(r.runner)).map((r) => ({ key: r.runKey || `${r.repo}.${r.id}`, account: r.runner?.account })), ...plans.map((p) => ({ key: p.key, account: p.account }))])
     return json({ ...v, runs, plans, accounts, disk: diskReading(), dirtyMain: dirtyMainReading(), slots: slotsReading(), usageBusy: usageInflight, slack: slackOn(), pageId: PAGE_ID })
+  }
+  // The review packet (packet.ts): the JSON files of scripts/review_packet.py under .discovery/review-packet/<ID>/, read-only. The id is a
+  // plain name of a real run (the same check as the visual-review routes), so no path comes from anything else; an absent file is absent.
+  if (req.method === "GET" && path === "/api/review-packet") {
+    const dossier = url.searchParams.get("dossier") ?? "", repo = url.searchParams.get("repo") ?? ""
+    if (!/^[\w.-]+$/.test(dossier) || dossier.startsWith(".") || (repo && !/^[\w.-]+$/.test(repo))) return json({ error: "dossier (and repo) must be plain names" }, 400)
+    const runs = (await allRuns(true)).filter((r) => r.id === dossier && (!repo || r.repo === repo))
+    if (!runs.length) return json({ error: "no such dossier" + (repo ? " in " + repo : "") }, 404)
+    const root = [...new Set(runs.flatMap((r) => [r.worktree, r.runner?.root, r.main]).filter((x): x is string => !!x))].find((r) => hasPacket(r, dossier))
+    if (!root) return json({ error: "no review packet for " + dossier }, 404)
+    const dir = packetDir(root, dossier)
+    try { return json(await packetCache.get(dir, packetSignature(dir), async () => readPacket(root, dossier))) } catch (e) { return json({ error: "review packet failed: " + (e as Error).message }, 500) }
   }
   // Visual review (VR-03): the change graph l0/l1/l2.json of a dossier, laid out by ELK on the server. The dossier's repo
   // roots are those of its runs (worktree, runner root, main checkout), the way the dossier routes find it.
