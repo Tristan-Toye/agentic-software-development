@@ -778,6 +778,14 @@ not at `pr`/`done` first gets one `run_dossier.py chat` message to its own sessi
 reply, no reply within `ASD_AUTO_WORK_ASK_WAIT` seconds (default 1800), or a failed chat. See `references/owner-questions.md`
 (Dashboard, Automatic work) for the cycle.
 
+A run that failed and asked the owner itself is not a failure for the cycle: `run_dossier.py`
+`ask_failure` records the state `failed`, saves its `run-failure` question in `runner.json` (`questions`) and keeps its
+process alive waiting on the answer. While that process is alive and the question unanswered, auto work marks the member
+"waiting on <question id>", does not pause, raises no question of its own and never starts a second run; Retry brings the
+runner back to running (the member is normal again), Stop ends it `failed` with no open question (the usual pause and
+`auto-work-pause` question follow). A cycle already paused for a member whose run is live again, or waits on its own
+question, clears itself on the next tick (no relaunch) and closes its open `auto-work-pause` question with an agent answer.
+
 Every pause also raises one owner question (product kind, topic `auto-work-pause`, on the member's dossier or `auto-work` for a repo-level stop; the id is kept in `paused.question`, so never twice for one pause): A resumes (for an `accept` pause A accepts the still-open items, B relaunches the run), the last option leaves it paused. Answering applies the action as `--resume` does; `--resume` or the Resume button closes the open question.
 
 Eager merge is a second, separate switch (`auto_work.py --eager-merge on|off --root R`,
