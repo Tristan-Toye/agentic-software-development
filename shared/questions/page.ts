@@ -4,6 +4,7 @@
 import { vrWalkOrder } from "./vrwalk.ts"
 import { vrDecisionStats } from "./vrdecision.ts"
 import { VR_TEXT, vrFitLabel } from "./vrtext.ts"
+import { packetBody, packetModel } from "./packet.ts"
 import { paneDefault, paneRead, paneSlug, paneWrite, splitSections } from "./panes.ts"
 
 export const PAGE = String.raw`<!doctype html>
@@ -226,6 +227,7 @@ details.pane>summary:hover{background:var(--raised)}
 details.pane .pbody{padding:0 14px 12px}
 details.pane.flat>.pbody>.panel,details.pane.flat>.pbody>section.panel{border:0;background:none;box-shadow:none;padding:0;margin:0}
 details.pane.flat>.pbody>.panel>.res-hd .kind{display:none}
+.pk-wrap{overflow-x:auto;margin:4px 0 8px}table.pk{border-collapse:collapse;font-size:12.5px;width:100%}table.pk th,table.pk td{border-top:1px solid var(--bd);padding:3px 8px;text-align:left;vertical-align:top}table.pk th{color:var(--mut);font-weight:600;white-space:nowrap}.pk-h{font-size:12px;font-weight:600;color:var(--mut);margin:8px 0 0}a.pk-a,code.pk-a{font-family:var(--mono,ui-monospace,monospace);font-size:12px;word-break:break-all}
 details.pane.sub{margin:6px 0;background:var(--bg)}details.pane.sub>summary{font-size:13px}
 details.qrow{border-top:1px solid var(--bd);margin:0}details.qrow>summary{display:flex;gap:12px;align-items:baseline;padding:6px 0;font-size:13px;color:var(--fg)}.qrq{flex:1 1 40%;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.qra{flex:1 1 40%;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .loading{color:var(--mut);padding:10px 4px;display:flex;align-items:center;gap:8px}.skel-t{color:var(--mut);margin:0 0 6px;display:flex;align-items:center;gap:8px}
@@ -283,6 +285,8 @@ ${paneWrite.toString()}
 ${paneDefault.toString()}
 ${paneSlug.toString()}
 ${splitSections.toString()}
+${packetModel.toString()}
+${packetBody.toString()}
 function vrKey(repo, id) { return repo + '/' + id; }
 async function vrLoad(repo, id) {
   const key = vrKey(repo, id); let d = null;
@@ -293,6 +297,14 @@ async function vrLoad(repo, id) {
   if (d && d.review) { const st = VRS[key] = VRS[key] || {}; st.review = d.review; if (st.paint) st.paint(); }
   vrMapLoad(repo);
   if ((d ? d.rev : null) !== had) render();
+}
+/* The review packet (packet.ts, GET /api/review-packet): one pane per packet file that exists, none for a missing one. */
+const PKT = {};
+async function pktLoad(repo, id) {
+  const key = vrKey(repo, id); let d = null;
+  try { const r = await fetch('/api/review-packet?dossier=' + enc(id) + '&repo=' + enc(repo)); d = r.ok ? await r.json() : null; } catch (e) { d = null; }
+  const had = JSON.stringify(PKT[key] || null); PKT[key] = d;
+  if (JSON.stringify(d) !== had) render();
 }
 /* VR-06: the committed product map of a repo (stale banner, the diagram list), from the server's cached vr_map check. */
 const VRM = {};
@@ -1452,6 +1464,7 @@ PANES.push(
   c => { if (c.mode === 'run' || !c.d || !c.d.html) return null; const sp = splitSections(c.d.html);
     return { key: 'dossier', title: 'Dossier', badge: sp.sections.length ? { text: sp.sections.length + ' section' + (sp.sections.length === 1 ? '' : 's'), tone: 'neutral' } : null, def: paneDefault('dossier', c.pd), cls: 'flat',
       body: () => [sp.intro.trim() ? mdBlock(sp.intro, 'doc:intro') : null].concat(sp.sections.map(s => pane(c.item, { key: 'sec:' + s.slug, title: s.title, def: false, cls: 'sub', body: () => [mdBlock(s.html, 'doc:' + s.slug)] }))) }; },
+  c => { const pk = PKT[vrKey(c.r.repo, c.r.id)]; if (!pk || !pk.files) return null; return Object.keys(pk.files).map(n => packetModel(n, pk.files[n])).filter(Boolean).map(m => ({ key: m.key, title: m.title, badge: m.badge, def: false, cls: 'flat', body: () => packetBody(h, m, pk.root) })); },
   c => c.mode === 'run' || !c.r.answered.length ? null : { key: 'answered', title: 'Answered questions', badge: { text: String(c.r.answered.length), tone: 'neutral' }, def: paneDefault('answered', c.pd), cls: 'flat',
     body: () => c.r.answered.map(a => h('details', { class: 'qrow', 'data-k': 'qa:' + a.id }, [h('summary', {}, [h('span', { class: 'qrq' }, [a.text.split('\n')[0]]), h('span', { class: 'qra mut' }, [(a.option ? a.option + ' · ' : '') + a.answer.split('\n')[0]])]),
       h('div', { class: 'panel qa' }, [h('div', {}, ['Q: ' + a.text]), h('div', { class: 'a' }, ['A: ' + (a.option ? a.option + ' · ' : '') + a.answer + ' · ', when(a.answeredAt || a.asked)]), h('a', { class: 'small', href: '/questions#q=' + enc(a.id) }, ['thread'])])])) },
@@ -1845,7 +1858,7 @@ async function load(what) {
   await Promise.all(jobs);
   await loadDetail();
   if (R.kind === 'item') { S.loaded = true; S.changedAt = Date.now(); render(); } /* the header, the questions and the dossier text show before the (slow) diagrams arrive */
-  if (R.kind === 'item') await vrLoad(R.repo, R.id);
+  if (R.kind === 'item') { pktLoad(R.repo, R.id); await vrLoad(R.repo, R.id); }
   if (R.kind === 'repo' || R.kind === 'arch') await vrMapLoad(R.repo);
   if (R.kind === 'arch') { const want = new URLSearchParams(location.search).get('d'); const m = VRM[R.repo]; if (want && (!m || m.open !== want)) vrOpenDiagram(R.repo, want); }
   S.loaded = true; S.changedAt = Date.now(); render();

@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""The review packet: five mechanical data producers for a finished dossier's reviewer.
+"""The review packet: six mechanical data producers for a finished dossier's reviewer.
 
     review_packet.py all --root DIR --dossier ID [--base SHA] [--head REV] [--out DIR] [--log]
-    review_packet.py contract-diff|criteria-evidence|reading-order|coupling-delta|invariants  (same flags)
+    review_packet.py contract-diff|criteria-evidence|reading-order|coupling-delta|invariants|migration-lint  (same flags)
     review_packet.py --selftest
 
 Each producer writes one JSON file under `<root>/.discovery/review-packet/<ID>/` (`--out`
@@ -26,6 +26,11 @@ overrides). The schemas are `references/visual-review/review-packet-<name>.schem
                             checklist lines, contract prose, review_signals markers); the orchestrator adds
                             its own through `invariants.authored.json` in the output directory. An item
                             with no verifiable anchor is `speculative: true`.
+
+    migration-lint.json     a fixed rule list (MIG001 drop table ... MIG008 truncate, plus MIG006 an edit to a migration
+                            already on the base) run over the SQL migrations the change adds or edits; each finding is a rule
+                            id and a path:line, never a sentence. `--migrations GLOB` (repeatable) overrides the discovery
+                            (merge_dossier's migrations/NNNN_name.sql); `-- lint:ignore MIGnnn` lists a finding as suppressed.
 
 A producer that cannot run (no graph, a language the extractor does not cover, no git range) writes
 `{"skipped": "<reason>"}` and the run goes on: the packet never blocks a build. Every generated sentence is
@@ -55,7 +60,7 @@ from collections import Counter, defaultdict
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 SCHEMA_VERSION = "1.0.0"
-PRODUCERS = ("contract-diff", "criteria-evidence", "reading-order", "coupling-delta", "invariants")
+PRODUCERS = ("contract-diff", "criteria-evidence", "reading-order", "coupling-delta", "invariants", "migration-lint")
 OUT_REL = os.path.join(".discovery", "review-packet")
 REF_DIR = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "references", "visual-review"))
 
@@ -1077,6 +1082,152 @@ def invariants(root: str, dossier: str, base: str, head: str, out_dir: str) -> d
 # ---------------------------------------------------------------------------------------------- driver
 
 
+# ---------------------------------------------------------------------------------------------- 6 migration-lint
+
+# A fixed rule list: an id, a short name, and the pattern of one statement. No verdict sentence is generated; a finding is
+# the rule id plus the path:line of the statement. `-- lint:ignore MIG003` on the statement's line or the line above it
+# moves the finding to `suppressed`, so a suppression stays visible in the file.
+MIGRATION_RULES = (
+    ("MIG001", "drop-table", re.compile(r"\bDROP\s+TABLE\b", re.I)),
+    ("MIG002", "drop-column", re.compile(r"\bDROP\s+COLUMN\b", re.I)),
+    ("MIG003", "not-null-without-default", None),
+    ("MIG004", "column-type-change", re.compile(r"\bALTER\s+COLUMN\s+\S+\s+(?:SET\s+DATA\s+)?TYPE\b|\bMODIFY\s+(?:COLUMN\s+)?\S+\s+\w+", re.I)),
+    ("MIG005", "rename", re.compile(r"\bRENAME\s+(?:TO|COLUMN|CONSTRAINT)\b|\bRENAME\s+\S+\s+TO\b", re.I)),
+    ("MIG006", "edit-merged-migration", None),
+    ("MIG007", "backfill-with-schema-change", None),
+    ("MIG008", "truncate", re.compile(r"\bTRUNCATE\b", re.I)),
+)
+DEFAULT_MIGRATION_GLOBS = ("**/migrations/[0-9]*.sql",)
+SCHEMA_STMT = re.compile(r"^\s*(?:CREATE|ALTER|DROP)\s", re.I)
+DATA_STMT = re.compile(r"^\s*(?:UPDATE|DELETE|INSERT|REPLACE)\b", re.I)
+IDEMPOTENT = re.compile(r"\bON\s+CONFLICT\b|\bINSERT\s+OR\s+(?:IGNORE|REPLACE)\b|\bINSERT\s+IGNORE\b|\bWHERE\s+NOT\s+EXISTS\b|\bIS\s+NULL\b", re.I)
+IGNORE_RE = re.compile(r"lint:ignore\s+((?:MIG\d{3}[\s,]*)+)", re.I)
+
+
+def is_migration(path: str, globs) -> bool:
+    """Discovery is merge_dossier's MIGRATION_RE (NNNN_name.sql in a migrations folder) unless `globs` overrides it."""
+    if globs:
+        return any(fnmatch.fnmatch(path, g) or fnmatch.fnmatch(path, g.replace("**/", "")) for g in globs)
+    try:
+        from merge_dossier import MIGRATION_RE
+    except Exception:  # the helper module is optional here
+        MIGRATION_RE = re.compile(r"^(.*/)?migrations/(\d+)[_-][^/]+\.sql$")
+    return bool(MIGRATION_RE.match(path))
+
+
+def sql_statements(text: str) -> tuple[list[tuple[int, int, str]], dict[int, set[str]]]:
+    """([(first line, last line, statement with comments blanked)], {line: ids named by a lint:ignore comment})."""
+    ignores: dict[int, set[str]] = {}
+    for n, raw in enumerate(text.split("\n"), 1):
+        m = IGNORE_RE.search(raw)
+        if m:
+            ignores[n] = {x.upper() for x in re.findall(r"MIG\d{3}", m.group(1), re.I)}
+    blank = lambda m: re.sub(r"[^\n]", " ", m.group(0))
+    clean = re.sub(r"/\*.*?\*/", blank, text, flags=re.S)
+    clean = re.sub(r"--[^\n]*", blank, clean)
+    out, cur, start = [], [], 0
+    for n, line in enumerate(clean.split("\n"), 1):
+        pos = 0
+        while True:
+            semi = line.find(";", pos)
+            piece = line[pos:] if semi < 0 else line[pos:semi]
+            if piece.strip() and not start:
+                start = n
+            if start:
+                cur.append(piece)
+            if semi < 0:
+                if start:
+                    cur.append("\n")
+                break
+            out.append((start or n, n, "".join(cur)))
+            cur, start, pos = [], 0, semi + 1
+    tail = "".join(cur)
+    if tail.strip():
+        out.append((start, len(clean.split("\n")), tail))
+    return [(a, b, t.strip("\n")) for a, b, t in out if t.strip()], ignores
+
+
+def lint_statements(text: str, created_tables_extra=()) -> list[tuple[str, int, int]]:
+    """[(rule id, line, statement start line)] for one migration file's text, rules MIG001-MIG005, MIG007, MIG008."""
+    stmts, _ = sql_statements(text)
+    found: list[tuple[str, int, int]] = []
+    created = {m.group(1).strip('"`[]').lower() for _, _, t in stmts for m in re.finditer(r"\bCREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?(\S+?)\s*\(", t, re.I)}
+    created |= set(created_tables_extra)
+    schema_change = any(SCHEMA_STMT.match(t) for _, _, t in stmts)
+
+    def line_of(a: int, t: str, m: re.Match) -> int:
+        return a + t[: m.start()].count("\n")
+
+    for a, b, t in stmts:
+        for rid, _name, pat in MIGRATION_RULES:
+            if pat is None:
+                continue
+            for m in pat.finditer(t):
+                if rid == "MIG004" and m.group(0).upper().startswith("MODIFY") and not re.match(r"\s*ALTER\s+TABLE", t, re.I):
+                    continue
+                found.append((rid, line_of(a, t, m), a))
+        am = re.match(r"\s*ALTER\s+TABLE\s+(?:IF\s+EXISTS\s+)?(?:ONLY\s+)?(\S+)", t, re.I)
+        if am and am.group(1).strip('"`[]').lower() not in created:
+            for m in re.finditer(r"\bADD\s+(?:COLUMN\s+)?(?:IF\s+NOT\s+EXISTS\s+)?[^,]*?\bNOT\s+NULL\b[^,]*", t, re.I):
+                if not re.search(r"\bDEFAULT\b|\bGENERATED\b|\bAS\s*\(", m.group(0), re.I):
+                    found.append(("MIG003", line_of(a, t, m), a))
+            for m in re.finditer(r"\bALTER\s+COLUMN\s+\S+\s+SET\s+NOT\s+NULL\b", t, re.I):
+                found.append(("MIG003", line_of(a, t, m), a))
+        if schema_change and DATA_STMT.match(t) and not IDEMPOTENT.search(t):
+            found.append(("MIG007", a, a))
+    return found
+
+
+def added_lines_of(diff: str) -> int:
+    """The first new-side line of the first hunk in a `diff -U0` text, 1 when there is none."""
+    m = re.search(r"^@@ -\d+(?:,\d+)? \+(\d+)", diff, re.M)
+    return max(int(m.group(1)), 1) if m else 1
+
+
+def migration_lint(root: str, dossier: str, base: str, head: str, globs=None) -> dict:
+    globs = tuple(globs or ())
+    rows = git(root, "diff", "--no-renames", "--name-status", "%s..%s" % (base, head)).splitlines()
+    changed = []
+    for r in rows:
+        st, _, path = r.partition("\t")
+        if st[:1] in ("A", "M", "D") and is_migration(path, globs):
+            changed.append((st[:1], path))
+    if not changed:
+        return skipped("migration-lint", dossier, "the change adds or edits no migration file (%s)" % (", ".join(globs) if globs else "migrations/NNNN_name.sql"))
+    findings: list[dict] = []
+    suppressed: list[dict] = []
+    files = []
+    for st, path in sorted(changed, key=lambda x: x[1]):
+        files.append({"path": path, "status": {"A": "added", "M": "modified", "D": "deleted"}[st]})
+        if st in ("M", "D"):
+            hunk = git_try(root, "diff", "-U0", "--no-renames", "%s..%s" % (base, head), "--", path) or ""
+            findings.append({"rule": "MIG006", "name": "edit-merged-migration", "path": path, "line": added_lines_of(hunk) if st == "M" else 1,
+                             "anchor": "%s:%d" % (path, added_lines_of(hunk) if st == "M" else 1), "file_status": files[-1]["status"], "statement": None})
+        if st == "D":
+            continue
+        text = git_try(root, "show", "%s:%s" % (head, path))
+        if text is None:
+            continue
+        lines = text.split("\n")
+        _stmts, ignores = sql_statements(text)
+        for rid, line, start in lint_statements(text):
+            name = next(n for i, n, _ in MIGRATION_RULES if i == rid)
+            row = {"rule": rid, "name": name, "path": path, "line": line, "anchor": "%s:%d" % (path, line), "file_status": files[-1]["status"],
+                   "statement": lines[line - 1].strip()[:160] if 0 < line <= len(lines) else None}
+            (suppressed if any(rid in ignores.get(n, ()) for n in (start - 1, start, line - 1, line)) else findings).append(row)
+    order = {i: n for n, (i, _, _) in enumerate(MIGRATION_RULES)}
+    findings.sort(key=lambda f: (f["path"], f["line"], order[f["rule"]]))
+    suppressed.sort(key=lambda f: (f["path"], f["line"], order[f["rule"]]))
+    by_rule = Counter(f["rule"] for f in findings)
+    return {
+        "schema_version": SCHEMA_VERSION, "producer": "migration-lint", "dossier": dossier,
+        "summary": {"files": len(files), "findings": len(findings), "suppressed": len(suppressed), "by_rule": dict(sorted(by_rule.items()))},
+        "rule": "Every finding is a fixed rule id at a path:line; there is no verdict. `-- lint:ignore MIGnnn` moves a finding to `suppressed`.",
+        "rules": [{"id": i, "name": n} for i, n, _ in MIGRATION_RULES],
+        "files": files, "findings": findings, "suppressed": suppressed,
+    }
+
+
 def receipt(name: str, data: dict) -> str:
     if "skipped" in data:
         return "REVIEW-PACKET: %s.json skipped: %s" % (name, data["skipped"][:160])
@@ -1090,11 +1241,14 @@ def receipt(name: str, data: dict) -> str:
         return "REVIEW-PACKET: reading-order.json %d files listed in %d groups, not listed: %d files" % (data["listed_files"], len(data["order"]), data["not_listed"]["count"])
     if name == "coupling-delta":
         return "REVIEW-PACKET: coupling-delta.json +%d/-%d dependencies, %d new cycles, %d layer breaks" % (s["added"], s["removed"], s["new_cycles"], s["layer_breaks"])
+    if name == "migration-lint":
+        return "REVIEW-PACKET: migration-lint.json %d files, %d findings (%d suppressed)%s" % (
+            s["files"], s["findings"], s["suppressed"], "".join(", %s x%d" % kv for kv in s["by_rule"].items()))
     return "REVIEW-PACKET: invariants.json %d items (%d speculative, %d authored)" % (s["items"], s["speculative"], s["authored"])
 
 
 def run(root: str, dossier: str, which: list[str], base: str | None, head: str, out: str | None, test_logs=None, scope=None, layers=None,
-        max_files: int = 40) -> dict[str, dict]:
+        max_files: int = 40, migrations=None) -> dict[str, dict]:
     root = os.path.abspath(root)
     out_dir = out or os.path.join(root, OUT_REL, dossier)
     os.makedirs(out_dir, exist_ok=True)
@@ -1108,7 +1262,7 @@ def run(root: str, dossier: str, which: list[str], base: str | None, head: str, 
     results: dict[str, dict] = {}
     for name in which:
         try:
-            if not base and name in ("contract-diff", "criteria-evidence", "reading-order", "invariants"):
+            if not base and name in ("contract-diff", "criteria-evidence", "reading-order", "invariants", "migration-lint"):
                 data = skipped(name, dossier, "no --base given and no work/summary.json to read it from")
             elif name == "contract-diff":
                 data = contract_diff(root, dossier, base, head)
@@ -1118,6 +1272,8 @@ def run(root: str, dossier: str, which: list[str], base: str | None, head: str, 
                 data = reading_order(root, dossier, base, head, scope, max_files, out_dir)
             elif name == "coupling-delta":
                 data = coupling_delta(root, dossier, layers)
+            elif name == "migration-lint":
+                data = migration_lint(root, dossier, base, head, migrations)
             else:
                 data = invariants(root, dossier, base, head, out_dir)
         except Exception as err:  # the packet never blocks a run
@@ -1339,6 +1495,64 @@ def _build_fixture(td: str) -> tuple[str, str, str]:
     return td, base, head
 
 
+def _migration_selftest(check) -> None:
+    with tempfile.TemporaryDirectory() as mtd:
+        def msh(*a):
+            subprocess.run(["git", "-C", mtd, *a], check=True, capture_output=True)
+
+        def mput(rel, body):
+            os.makedirs(os.path.dirname(os.path.join(mtd, rel)), exist_ok=True)
+            with open(os.path.join(mtd, rel), "w") as fh:
+                fh.write(body)
+
+        msh("init", "-q", "-b", "main"); msh("config", "user.email", "t@t"); msh("config", "user.name", "t")
+        mput("crates/p/migrations/0001_init.sql", "CREATE TABLE users (id INT);\n")
+        mput("crates/p/migrations/0002_more.sql", "ALTER TABLE users ADD COLUMN a INT;\n")
+        msh("add", "-A"); msh("commit", "-q", "-m", "base")
+        mbase = subprocess.run(["git", "-C", mtd, "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip()
+        mput("crates/p/migrations/0002_more.sql", "ALTER TABLE users ADD COLUMN a INT;\nALTER TABLE users ADD COLUMN b INT;\n")
+        mput("crates/p/migrations/0003_risky.sql", "\n".join([
+            "-- a comment with DROP TABLE nothing;",
+            "ALTER TABLE users DROP COLUMN legacy;",                                   # 2 MIG002
+            "ALTER TABLE users ADD COLUMN email TEXT NOT NULL;",                       # 3 MIG003
+            "ALTER TABLE users ADD COLUMN ok TEXT NOT NULL DEFAULT '';",               # 4 clean
+            "ALTER TABLE users ALTER COLUMN age TYPE BIGINT;",                         # 5 MIG004
+            "ALTER TABLE users RENAME COLUMN nm TO name;",                             # 6 MIG005
+            "DROP TABLE old_users;",                                                   # 7 MIG001
+            "UPDATE users SET a = 1;",                                                 # 8 MIG007
+            "INSERT INTO users (id) VALUES (1) ON CONFLICT DO NOTHING;",               # 9 idempotent
+            "TRUNCATE audit;",                                                         # 10 MIG008
+            "-- lint:ignore MIG001",
+            "DROP TABLE tmp_users;",                                                   # 12 suppressed
+            "ALTER TABLE users",
+            "  ADD COLUMN multi TEXT NOT NULL;",                                       # 14 MIG003
+            "",
+        ]))
+        mput("crates/q/migrations/0001_fresh.sql", "CREATE TABLE t (id INT, x INT NOT NULL);\nALTER TABLE t ADD COLUMN y INT NOT NULL;\n")
+        mput("README.md", "DROP TABLE not_a_migration;\n")
+        msh("add", "-A"); msh("commit", "-q", "-m", "head")
+        mhead = subprocess.run(["git", "-C", mtd, "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip()
+        mres = run(mtd, "W-7", ["migration-lint"], mbase, mhead, os.path.join(mtd, "out"))["migration-lint"]
+        check("ml:schema", not validate_file("migration-lint", mres), str(validate_file("migration-lint", mres)[:3]))
+        got = {(f["rule"], f["anchor"]) for f in mres["findings"]}
+        r3 = "crates/p/migrations/0003_risky.sql"
+        for rule, line in [("MIG002", 2), ("MIG003", 3), ("MIG004", 5), ("MIG005", 6), ("MIG001", 7), ("MIG007", 8), ("MIG008", 10), ("MIG003", 14)]:
+            check("ml:%s@%d" % (rule, line), (rule, "%s:%d" % (r3, line)) in got, str(sorted(got)))
+        check("ml:default-and-idempotent-clean", not any(a.endswith((":4", ":9", ":1")) and a.startswith(r3) for _, a in got), str(sorted(got)))
+        check("ml:comment-not-linted", ("MIG001", r3 + ":1") not in got)
+        check("ml:suppressed-listed", [(f["rule"], f["line"]) for f in mres["suppressed"]] == [("MIG001", 12)], str(mres["suppressed"]))
+        check("ml:edit-merged", ("MIG006", "crates/p/migrations/0002_more.sql:2") in got, str(sorted(got)))
+        check("ml:new-table-columns-clean", not any("0001_fresh" in a and r == "MIG003" and a.endswith(":1") for r, a in got) and
+              not any("crates/q" in a for _, a in got), str(sorted(got)))
+        check("ml:non-migration-ignored", all(f["path"].endswith(".sql") for f in mres["findings"]))
+        check("ml:summary", mres["summary"]["findings"] == len(mres["findings"]) and mres["summary"]["by_rule"]["MIG003"] == 2, str(mres["summary"]))
+        check("ml:receipt", receipt("migration-lint", mres).startswith("REVIEW-PACKET: migration-lint.json 3 files"), receipt("migration-lint", mres))
+        custom = run(mtd, "W-7", ["migration-lint"], mbase, mhead, os.path.join(mtd, "out2"), migrations=["crates/zzz/*.sql"])["migration-lint"]
+        check("ml:configurable-glob", "skipped" in custom, str(custom)[:200])
+        custom = run(mtd, "W-7", ["migration-lint"], mbase, mhead, os.path.join(mtd, "out3"), migrations=["crates/q/migrations/*.sql"])["migration-lint"]
+        check("ml:configurable-glob-hit", [f["path"] for f in custom["files"]] == ["crates/q/migrations/0001_fresh.sql"], str(custom)[:200])
+
+
 def selftest() -> int:
     fails: list[str] = []
 
@@ -1449,6 +1663,11 @@ def selftest() -> int:
         check("iv:no-anchor-speculative", items["a clock skew"]["speculative"])
         check("iv:test-anchor", not items["tests anchor"]["speculative"], str(items["tests anchor"]))
 
+        # 6 migration-lint
+        ml = res["migration-lint"]
+        check("ml:skipped-without-migrations", "skipped" in ml and "no migration" in ml["skipped"], str(ml)[:200])
+        _migration_selftest(check)
+
         # skips never block
         with tempfile.TemporaryDirectory() as bare:
             subprocess.run(["git", "-C", bare, "init", "-q"], check=True, capture_output=True)
@@ -1469,7 +1688,7 @@ def selftest() -> int:
 
         dos = os.path.join(td, ".discovery", "dossiers", "W-9-demo.md")
         msg = dossier_edit.log_or_say(dos, [receipt(n, res[n]) for n in PRODUCERS])
-        check("log:written", "5 line(s) written" in msg, msg)
+        check("log:written", "6 line(s) written" in msg, msg)
 
     if fails:
         print("review_packet selftest FAILED:\n  " + "\n  ".join(fails), file=sys.stderr)
@@ -1490,6 +1709,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--scope")
     ap.add_argument("--layers")
     ap.add_argument("--max-files", type=int, default=40)
+    ap.add_argument("--migrations", action="append", default=[], help="glob of the migration files migration-lint reads (repeatable); default: merge_dossier's migrations/NNNN_name.sql")
     ap.add_argument("--log", action="store_true", help="append one REVIEW-PACKET receipt per file to the dossier's Build log")
     ap.add_argument("--selftest", action="store_true")
     args = ap.parse_args(argv)
@@ -1499,7 +1719,7 @@ def main(argv: list[str] | None = None) -> int:
         print("review_packet: a producer (or all) and --dossier are required", file=sys.stderr)
         return 2
     which: list[str] = list(PRODUCERS) if args.producer == "all" else [args.producer]
-    res = run(args.root, args.dossier, which, args.base, args.head, args.out, args.test_log, args.scope, args.layers, args.max_files)
+    res = run(args.root, args.dossier, which, args.base, args.head, args.out, args.test_log, args.scope, args.layers, args.max_files, args.migrations)
     lines = [receipt(n, res[n]) for n in which]
     print("\n".join(lines))
     if args.log:

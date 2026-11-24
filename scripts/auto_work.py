@@ -34,7 +34,9 @@ the `queued` state, the account routing and every owner question apply unchanged
 3. Each member is started through `run_dossier.py` and followed to the end.
 4. A member whose build is finished (status `pr` or `done`) gets "Fix all deferred" exactly as the dashboard button
    sends it: every open item (an item the owner ruled to leave open is dropped, so it is not open), named explicitly. It is finished when
-   that run is done and it has no open item left, or had none to begin with.
+   that run is done and none of the items it was launched with is still open (one left open pauses with "accept"), or
+   it had none to begin with. An item the run added itself (its own review findings) gets a follow-up /fix-deferred, at
+   most 2 per member (`fix_rounds`); after that the member is finished and the next cycle adopts the dossier.
 5. When every member is finished: the repository's non-code PRs are queued (`merge_docs_prs.py merge`, the "Merge all"
    button) and the script waits until each one is merged; then the stub's Integrate (`merge_dossier.py --integrate`)
    runs and the script waits for it to reach /stub; then land_stub.py merges the stub's PR when its conditions hold.
@@ -126,6 +128,7 @@ import planning_runs  # noqa: E402
 HERE = os.path.dirname(os.path.abspath(__file__))
 LIVE = ("running", "testing", "waiting", "queued", "paused", "parked")   # parked: a /work-on waiting for its blockers; run_dossier unparks it
 STAGE_OF = {"planned": "plan", "ready": "build", "building": "build", "review": "build", "pr": "fix", "done": "fix"}
+FIX_FOLLOWUPS = 2   # follow-up /fix-deferred rounds per member for items a fix run added itself
 LAG_TICKS = 2   # ticks a finished run's effect may take to show in the dashboard's facts before the cycle pauses
 
 
@@ -520,12 +523,25 @@ def step_member(st: dict, m: dict, run: dict | None) -> None:
         m["asked"] = None   # the agent fixed it (or it was intended after all and the dossier moved): the normal path takes over
         todo = open_items(run)
         if L and L["command"] == "fix-deferred":
-            if not todo or m["accepted"]:   # accepted: the owner took the items still open
+            # Only an item the run was launched with and left open is "not fixed". An item the run itself added (its own
+            # review findings) is new work: it gets a follow-up round, bounded, never an owner pause.
+            sent = {i.strip() for i in (L.get("items") or "").split(",") if i.strip()}
+            unfixed = [i for i in todo if i in sent] if sent else todo
+            added = [i for i in todo if i not in unfixed]
+            if m["accepted"] or not todo:   # accepted: the owner took the items still open
                 m.update(stage="finished", state="finished", error=""); return
-            m["lag"] += 1
-            if m["lag"] >= LAG_TICKS and not m["accepted"]:
-                pause(st, f"{m['id']}: /fix-deferred is done but {len(todo)} item(s) are still open ({', '.join(todo[:6])})", "member", m["id"], "accept")
-            return
+            if unfixed:
+                m["lag"] += 1
+                if m["lag"] >= LAG_TICKS:
+                    pause(st, f"{m['id']}: /fix-deferred is done but {len(unfixed)} item(s) are still open ({', '.join(unfixed[:6])})", "member", m["id"], "accept")
+                return
+            n = int(m.get("fix_rounds") or 0)
+            if n < FIX_FOLLOWUPS:
+                if launch(st, m, "fix-deferred", r, ",".join(added)):
+                    m["fix_rounds"] = n + 1; m["stage"] = "fix"
+                    m["state"] = f"follow-up /fix-deferred {n + 1}/{FIX_FOLLOWUPS}: {len(added)} item(s) the previous run added ({', '.join(added[:6])})"
+                return
+            m.update(stage="finished", state=f"finished; {len(added)} item(s) added by the last /fix-deferred ({', '.join(added[:6])}) left to the next cycle after {FIX_FOLLOWUPS} follow-up rounds", error=""); return
         if not todo or m["accepted"]:
             m.update(stage="finished", state="finished", error=""); return
         launch(st, m, "fix-deferred", r, ",".join(todo)); m["stage"] = "fix"; return
@@ -1047,6 +1063,19 @@ def selftest() -> int:
         step_member(stx(), m5, {"id": "R", "status": "ready", "runner": fd, "deferred": [{"id": "D-2", "state": "open"}]})
         check("a finished /fix-deferred with items the owner accepted as open: finished, nothing launched",
               calls_ == [] and m5["stage"] == "finished", (calls_, m5))
+        m6 = dict(mk(), launch=dict(m4["launch"]))
+        step_member(stx(), m6, {"id": "R", "status": "ready", "runner": fd, "deferred": [{"id": "D-1", "state": "done"}, {"id": "D-2", "state": "done"}, {"id": "D-9", "state": "open"}]})
+        check("a finished /fix-deferred that added D-9 itself: follow-up /fix-deferred D-9, no pause",
+              calls_ == [("R", "fix-deferred", "D-9")] and m6["fix_rounds"] == 1 and m6["stage"] == "fix", (calls_, m6))
+        calls_.clear()
+        st7 = stx(); m7 = dict(mk(), launch=dict(m4["launch"]), lag=5)
+        step_member(st7, m7, {"id": "R", "status": "ready", "runner": fd, "deferred": [{"id": "D-2", "state": "open"}, {"id": "D-9", "state": "open"}]})
+        check("a finished /fix-deferred with a launched item still open: the old pause, no follow-up",
+              calls_ == [] and bool(st7["paused"]) and "D-2" in str(st7["paused"]["reason"]) and "D-9" not in str(st7["paused"]["reason"]), (calls_, st7))
+        st8 = stx(); m8 = dict(mk(), launch=dict(m4["launch"]), fix_rounds=2)
+        step_member(st8, m8, {"id": "R", "status": "ready", "runner": fd, "deferred": [{"id": "D-9", "state": "open"}]})
+        check("follow-up bound reached: finished with the reason in the state, no launch, no pause",
+              calls_ == [] and not st8["paused"] and m8["stage"] == "finished" and "D-9" in str(m8["state"]), (calls_, st8, m8))
     finally:
         globals()["start_runner"] = real_start
 
