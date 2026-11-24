@@ -18,6 +18,7 @@ import re
 import sys
 
 LIVE = ("running", "testing", "waiting", "queued", "paused", "parked")
+LEADING_RE = re.compile(r"^\s*(?:Dossier\s+)?([A-Z][A-Z0-9]*-\d+)\b")   # "Dossier W-035 (minted ...", "W-035, local mode": two stage events opening with one id claim it
 CLAIMED_RE = re.compile(r"\b([A-Z][A-Z0-9]*-\d+)\s*\(?claimed")   # "W-218 (claimed, final)" and "W-219 claimed (claim_id exit 0)"
 FIXTURE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "shared", "test", "fixtures", "planning-runs")
 
@@ -52,8 +53,9 @@ def planning_runs(repo: str, runs_dir: str) -> dict[str, dict]:
             out.setdefault(m.upper(), {"key": key, "state": st.get("state")})
         try:
             with open(os.path.join(runs_dir, f"{key}.jsonl"), encoding="utf-8", errors="replace") as fh:
+                leads: dict[str, int] = {}
                 for line in fh:
-                    if not ("claimed" in line or "Q" in line):
+                    if not ("claimed" in line or "Q" in line or re.search(r'"kind":\s*"stage"', line)):
                         continue
                     try:
                         o = json.loads(line)
@@ -65,6 +67,12 @@ def planning_runs(repo: str, runs_dir: str) -> dict[str, dict]:
                     if o.get("kind") == "stage":
                         for m in CLAIMED_RE.findall(str(o.get("text", "")) + " " + str(o.get("stage", ""))):
                             out.setdefault(m.upper(), {"key": key, "state": st.get("state")})
+                        lead = LEADING_RE.match(str(o.get("text", "")))
+                        if lead:
+                            lid = lead.group(1).upper()
+                            leads[lid] = leads.get(lid, 0) + 1
+                            if leads[lid] == 2:
+                                out.setdefault(lid, {"key": key, "state": st.get("state")})
         except OSError:
             pass
     return out
@@ -92,11 +100,14 @@ def selftest() -> int:
 
     got = planning_runs("r", FIXTURE)
     check("fixture: live seed and plan-D runs name their claimed ids; dead, stopped and non-plan runs do not",
-          {k: v["key"] for k, v in got.items()} == {"W-218": "r.seed-webhook-rate-limit", "K-13": "r.K-2.plan-D-1", "W-219": "r.seed-plain-claim", "W-220": "r.seed-asked"}, got)
+          {k: v["key"] for k, v in got.items()} == {"W-218": "r.seed-webhook-rate-limit", "K-13": "r.K-2.plan-D-1", "W-219": "r.seed-plain-claim", "W-220": "r.seed-asked", "W-035": "r.seed-minted"}, got)
     check("fixture: the run state is carried", got["W-218"]["state"] == "running" and got["K-13"]["state"] == "queued", got)
     check("claimed_why names the run", "r.seed-webhook-rate-limit" in claimed_why("r", FIXTURE, "w-218") and claimed_why("r", FIXTURE, "W-1") == "")
     check("claim read from a plain 'W-219 claimed' stage and from the run's questions (the seed-single-migration-owner shape)",
           planning_runs("r", FIXTURE).get("W-219", {}).get("key") == "r.seed-plain-claim" and planning_runs("r", FIXTURE).get("W-220", {}).get("key") == "r.seed-asked",
+          planning_runs("r", FIXTURE))
+    check("claim read from two stage events opening with the id (the seed-audio-codec-library shape); one alone is no claim",
+          planning_runs("r", FIXTURE).get("W-035", {}).get("key") == "r.seed-minted" and "W-026" not in planning_runs("r", FIXTURE),
           planning_runs("r", FIXTURE))
     check("claimed_why: the claiming run itself is not refused", claimed_why("r", FIXTURE, "W-218", "r.seed-webhook-rate-limit") == "")
     return 1 if bad else 0

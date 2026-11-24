@@ -12,19 +12,25 @@ import { fileSig, readText } from "./asyncio.ts"
 export type PlanningRun = { key: string; state: string }
 const LIVE = ["running", "testing", "waiting", "queued", "paused", "parked"]
 const CLAIMED = /\b([A-Z][A-Z0-9]*-\d+)\s*\(?claimed/g   // "W-218 (claimed, final)" and "W-219 claimed (claim_id exit 0)"
+// A stage text that opens with the id ("Dossier W-035 (minted ...", "W-035, local mode ..."): the claim, when two stage
+// events of the run open with the same id (one alone may name a source dossier).
+const LEADING = /^\s*(?:Dossier\s+)?([A-Z][A-Z0-9]*-\d+)\b/
 /** Ids of the questions `<repo>.<ID>.Qn` a run asked: once /plan claimed an id, its questions carry it. */
 const questionIds = (repo: string, text: string) => [...text.matchAll(new RegExp(`\\b${repo.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\.([A-Z][A-Z0-9]*-\\d+)\\.Q\\d+\\b`, "g"))].map((m) => m[1])
 
-/** The ids one run's log claims, in log order: "claimed" in stage events, and the ids of the questions in runner lines. */
+/** The ids one run's log claims, in log order: "claimed" in stage events, an id two stage events open with, and the ids
+ *  of the questions in runner lines. */
 function logClaims(repo: string, text: string): string[] {
-  const ids: string[] = []
+  const ids: string[] = []; const leads = new Map<string, number>()
   for (const line of text.split("\n")) {
-    if (!line.includes("claimed") && !line.includes("Q")) continue
+    if (!line.includes("claimed") && !line.includes("Q") && !/"kind":\s*"stage"/.test(line)) continue
     let o: any
     try { o = JSON.parse(line) } catch { continue }
     if (o?.kind === "runner") for (const id of questionIds(repo, String(o.text ?? ""))) ids.push(id.toUpperCase())
     if (o?.kind !== "stage") continue
     for (const m of `${o.text ?? ""} ${o.stage ?? ""}`.matchAll(CLAIMED)) ids.push(m[1].toUpperCase())
+    const lead = String(o.text ?? "").match(LEADING)
+    if (lead) { const id = lead[1].toUpperCase(); leads.set(id, (leads.get(id) ?? 0) + 1); if (leads.get(id) === 2) ids.push(id) }
   }
   return ids
 }
