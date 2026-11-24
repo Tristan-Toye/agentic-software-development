@@ -425,9 +425,11 @@ NUDGE = ("RUNNER: your last turn ended without a RUNNER: line and nothing has ha
 QUESTION_ID = re.compile(r"(?:^|\.)Q\d+$")
 # A CI wait: `ci:<pr number>`.
 CI_ID = re.compile(r"^ci:\d+$")
-CI_PARENT_NEXT = ("Next step: the cause is the parent PR of #{n} (see above): resolve its conflict by merging its base into its branch "
-                  "(the resolve-merge procedure), push, then end the turn with RUNNER: WAITING ci:{n} again. If you cannot resolve it, end "
-                  "with `RUNNER: FAILED CI not started on PR #{n}: its parent PR conflicts` so it is reported as a blocker.")
+CI_PARENT_NEXT = ("Next step: the cause is the parent PR of #{n} (see above). The runner already had a resolve-merge run work on it and "
+                  "it still conflicts: do NOT resolve it yourself (that PR is not yours to edit) and do NOT ask the owner how. End the turn with "
+                  "`RUNNER: FAILED CI not started on PR #{n}: its parent PR still conflicts after the runner's resolve-merge` so it is reported as a blocker.")
+# `wait_ci.py` exit 7: "PR #76 is stacked on #620 (branch ...), which conflicts with ..."
+PARENT_RE = re.compile(r"stacked on #(\d+)")
 CI_NEVER_STARTED_NEXT = ("Next step: do NOT end the turn with RUNNER: WAITING ci:{n} again (the runner will not wait on it). "
                          "State in your summary that CI did not run on PR #{n} (not that it failed; GitHub's mergeability for it is "
                          "unknown and a close/reopen did not start a run), then end the turn with `RUNNER: FAILED CI never started on "
@@ -504,8 +506,11 @@ def store_seed(root: str, dossier: str, src: str) -> str:
 
 def run_key(root: str, dossier: str, command: str = "work-on", items: str = "") -> str:
     """The run's key: `<repo>.<ID>`, and for a `plan` run of a routed deferred item `<repo>.<ID>.plan-<D-n>`, so the
-    planners of several items run at once, beside the source dossier's own run."""
-    return key_of(root, dossier) + (f".plan-{items}" if command == "plan" and items else "")
+    planners of several items run at once, beside the source dossier's own run. A `resolve-merge` run of given PRs is
+    `<repo>.<ID>.resolve-<pr>`: the runner starts one for a conflicting parent PR while the dossier's own session waits on
+    its child's CI, and a second run under the dossier's own key would be refused as live."""
+    return key_of(root, dossier) + (f".plan-{items}" if command == "plan" and items else "") + (
+        f".resolve-{items.replace(',', '-')}" if command == "resolve-merge" and items else "")
 
 
 def check_ident(value: str, what: str) -> None:
@@ -1319,7 +1324,7 @@ def owner_replied_since(key: str, since: str) -> bool:
 
 def repo_of_key(key: str) -> str:
     """The repo name of a run key `<repo>.<ID>` (or `<repo>.<ID>.plan-<D-n>`): what key_of/run_key put in front of the ID."""
-    return re.sub(r"\.plan-[^.]+$", "", key).rpartition(".")[0] or key
+    return re.sub(r"\.(?:plan|resolve)-[^.]+$", "", key).rpartition(".")[0] or key
 
 
 def slot_census_by_repo(me: str) -> tuple[dict[str, int], list[tuple[tuple[int, str], str]]]:
@@ -1490,6 +1495,7 @@ class Runner:
         self.permission_mode = permission_mode
         self.max_stages = max_stages
         self.ci_never_started: set[int] = set()
+        self.parent_tries: dict[int, int] = {}   # parent PR -> resolve-merge runs the runner started for it
         prev = read_json(os.path.join(runs_dir(), run_key(root, dossier, command, items) + ".runner.json"), {}) or {}
         prev_acct = prev.get("account", "")
         # /work-on stacked on a re-plan's unmerged plan branch (committed mode): a restart of the same unfinished build
@@ -1815,6 +1821,18 @@ class Runner:
         if not own:
             env["GIT_SSH_COMMAND"] = GIT_SSH_HARDENED
 
+    def reset_watchdog(self) -> None:
+        """A new claude process starts with a fresh idle clock and none of the old process's Bash calls in flight. The
+        previous stage's `last_work` and `inflight_bash` (a call running when the stage split or was killed, then a long
+        queue wait for a slot) otherwise make the stall watchdog read the new process as hung for the old one's minutes:
+        W-182's stage 2 was declared stalled "73 min" three seconds after it started, twice, and asked the owner."""
+        self.turn_open = False
+        self.last_out = time.monotonic()
+        self.last_work = self.last_out
+        self.inflight_bash.clear()
+        self.bg_wait = ""
+        self.stall_bg_at = 0.0
+
     def spawn(self) -> tuple[queue.Queue, bool]:
         self.wrong_model = ""
         self.stray = 0
@@ -1824,8 +1842,7 @@ class Runner:
         sid, self.resume_sid = self.resume_sid, ""
         self.resumed = bool(sid) and self.resume_acct == self.account["name"]
         self.got_init = False
-        self.turn_open = False
-        self.last_out = time.monotonic()
+        self.reset_watchdog()
         self.last_ev = "none"
         try:
             self.err_start = os.path.getsize(self.err_path)
@@ -2607,6 +2624,46 @@ class Runner:
             return None
         return os.path.join(d, names[0]) if names else None
 
+    def run_live_key(self, key: str) -> bool:
+        st = read_json(os.path.join(runs_dir(), key + ".runner.json"), {}) or {}
+        return st.get("state") in LIVE_STATES and runner_alive(st.get("pid"))
+
+    def pr_conflicts(self, n: int) -> bool | None:
+        """Whether PR n is DIRTY/CONFLICTING now; None when it cannot be read."""
+        try:
+            p = subprocess.run(shlex.split(os.environ.get("ASD_GH_BIN") or "gh") + ["pr", "view", str(n), "--json", "mergeStateStatus,mergeable,state"],
+                               cwd=self.root, capture_output=True, text=True, timeout=120, stdin=subprocess.DEVNULL)
+            row = json.loads(p.stdout) if p.returncode == 0 else None
+        except (OSError, subprocess.SubprocessError, ValueError):
+            return None
+        if not isinstance(row, dict):
+            return None
+        if row.get("state") not in (None, "OPEN"):
+            return False   # merged or closed: it no longer blocks the child
+        return row.get("mergeStateStatus") == "DIRTY" or row.get("mergeable") == "CONFLICTING"
+
+    def start_parent_resolve(self, parent: int) -> str:
+        """The parent PR of a CI wait conflicts: have the queue's resolve-merge procedure resolve it, in a run of its own
+        (`<repo>.<ID>.resolve-<pr>`; this dossier's own key is the waiting session's). It is not put in the merge queue:
+        a queued dossier is merged into its stub once clean, and conflict resolution must not merge anything. Not started
+        twice for one parent (a live run of that key is waited for).
+        Returns the key of the run that resolves it."""
+        rkey = run_key(self.root, self.dossier, "resolve-merge", str(parent))
+        if self.run_live_key(rkey):
+            self.event(f"parent #{parent} conflicts; its resolve-merge run is already live; waiting for it", "waiting")
+            return rkey
+        self.parent_tries[parent] = self.parent_tries.get(parent, 0) + 1
+        cmd = shlex.split(os.environ.get("ASD_PARENT_RESOLVE_BIN") or f"{shlex.quote(sys.executable)} {shlex.quote(os.path.abspath(__file__))}") + [
+            self.dossier, "--root", self.root, "--command", "resolve-merge", "--items", str(parent), "--model", "sonnet"]
+        try:
+            r = subprocess.run(cmd, capture_output=True, text=True, timeout=60, stdin=subprocess.DEVNULL)
+            first = (r.stdout.strip().splitlines() or r.stderr.strip().splitlines() or [""])[0]
+        except (OSError, subprocess.SubprocessError) as e:
+            first = str(e)
+        self.event(f"parent #{parent} conflicts, so CI cannot start on the stacked PR: started a resolve-merge run for it (attempt "
+                   f"{self.parent_tries[parent]} of 2); waiting for it, no owner question: {first[:160]}", "waiting")
+        return rkey
+
     def ci_wait(self, prs: list[int]) -> list[tuple[int, str, str]] | str | None:
         """`RUNNER: WAITING ci:<pr>`: run scripts/wait_ci.py for each PR here, in parallel, without a token spent, and
         return [(pr, green|red|timeout, compact summary)] once every PR has a verdict (None: the run was stopped; "message": the owner wrote to the run, nothing is lost: the wait restarts).
@@ -2624,9 +2681,30 @@ class Runner:
                                         stderr=subprocess.STDOUT, text=True)
             self.children.append(procs[n])
         out: dict[int, tuple[str, str]] = {}
+        poll_at: dict[int, float] = {}
+        resolving: dict[int, tuple[int, str, float, float]] = {}   # child PR -> (conflicting parent, resolve run key, deadline, started)
         try:
             while len(out) < len(procs):
-                for n, p in procs.items():
+                for n, p in list(procs.items()):
+                    if n in resolving:
+                        if time.monotonic() < poll_at.get(n, 0.0):
+                            continue
+                        poll_at[n] = time.monotonic() + env_num("ASD_PARENT_POLL", 20)
+                        parent, rkey, deadline, t0 = resolving[n]
+                        live = self.run_live_key(rkey) or time.monotonic() - t0 < env_num("ASD_PARENT_GRACE", 60)   # a just-started run has no record yet
+                        dirty = self.pr_conflicts(parent)
+                        if dirty is False or (not live and dirty is None):
+                            del resolving[n]   # the parent is clean again (or the run ended and it cannot be read): CI on the child starts
+                            self.event(f"parent #{parent} no longer conflicts; waiting on CI #{n} again", "waiting")
+                            cmd = [sys.executable, script, "--pr", str(n), "--timeout", str(timeout)] + (["--log", log] if log else [])
+                            procs[n] = subprocess.Popen(cmd, cwd=self.root, env=self.child_env(), stdout=subprocess.PIPE,
+                                                        stderr=subprocess.STDOUT, text=True)
+                            self.children.append(procs[n])
+                        elif not live or time.monotonic() > deadline:
+                            del resolving[n]
+                            out[n] = ("never-started", f"PR #{n} is stacked on #{parent}, which still conflicts: the runner's resolve-merge run "
+                                      + ("ended without resolving it" if not live else "did not finish in time"))
+                        continue
                     if n not in out and p.poll() is not None:
                         text = (p.communicate()[0] or "").strip()
                         verdict = {0: "green", 3: "timeout", 6: "never-started", 7: "never-started"}.get(p.returncode, "red")
@@ -2634,6 +2712,14 @@ class Runner:
                         tail = " | ".join(lines[-int(env_num("ASD_CI_TAIL_LINES", 30)):])[-3000:]
                         if p.returncode == 6:
                             self.ci_never_started.add(n)
+                        if p.returncode == 7 and (m := PARENT_RE.search(text)) and self.parent_tries.get(int(m.group(1)), 0) < 2:
+                            # The parent PR conflicts: the RUNNER gets it resolved (the session must not touch it, and the
+                            # owner has nothing to decide), then CI on the child is waited for again. Not a never-started
+                            # PR for the session: nothing is sent until CI has a verdict.
+                            parent = int(m.group(1))
+                            rkey = self.start_parent_resolve(parent)
+                            resolving[n] = (parent, rkey, time.monotonic() + env_num("ASD_PARENT_RESOLVE_TIMEOUT", 4 * 3600), time.monotonic())
+                            continue
                         if p.returncode not in (0, 1, 3, 6, 7):
                             tail = f"(wait_ci exit {p.returncode}) " + tail
                         out[n] = (verdict, tail)
@@ -3473,7 +3559,7 @@ def cmd_revive() -> int:
         prefix = main_repo_name(root) + "."
         if not key.startswith(prefix):
             continue
-        dossier = re.sub(r"\.plan-D-\d+$", "", key[len(prefix):])
+        dossier = re.sub(r"\.(?:plan-D-\d+|resolve-\d+(?:-\d+)*)$", "", key[len(prefix):])
         guard = os.path.join(runs_dir(), key + ".revive.json")
         recent = [t for t in (read_json(guard, []) or []) if time.time() - t < 3600]
         if len(recent) >= 3:
@@ -5174,8 +5260,22 @@ def selftest() -> int:
             "if n==72: print('FAIL unit-tests'); print('assert 1 == 2'); sys.exit(1)\n"
             "if n==74: print('conflicting'); sys.exit(5)\n"
             "if n==75: print('no run for the head'); sys.exit(6)\n"
-            "if n==76: print('PR stacked on #620, which conflicts'); sys.exit(7)\n"
+            "clean=os.path.exists(os.path.join(os.path.dirname(__file__),'parent.clean'))\n"
+            "if n==76 and clean: print('all green'); sys.exit(0)\n"
+            "if n==76: print('wait_ci: CI not started: PR #76 is stacked on #620 (branch x), which conflicts with stub/1'); sys.exit(7)\n"
+            "if n==77: print('wait_ci: CI not started: PR #77 is stacked on #621 (branch y), which conflicts with stub/1'); sys.exit(7)\n"
             "print('still pending'); sys.exit(3)\n")
+        # a conflicting parent (exit 7): the runner starts a resolve-merge run for it, waits until the parent is clean, then waits on the child's CI again
+        res_fake = os.path.join(tmp, "parent_resolve_fake.py")
+        open(res_fake, "w").write("import os,sys\nd=os.path.dirname(__file__)\nopen(os.path.join(d,'resolve.args'),'a').write(' '.join(sys.argv[1:])+'\\n')\n"
+                                  "if '--items' in sys.argv and sys.argv[sys.argv.index('--items')+1]=='620': open(os.path.join(d,'parent.clean'),'w').write('1')\n"
+                                  "print('started in the background')\n")
+        gh_par = os.path.join(tmp, "gh_parent_fake.py")
+        open(gh_par, "w").write("import os,sys,json\nd=os.path.dirname(__file__)\na=sys.argv[1:]\n"
+                                "if a[:2]==['pr','view']:\n"
+                                "    n=a[2]; clean=n=='620' and os.path.exists(os.path.join(d,'parent.clean'))\n"
+                                "    print(json.dumps({'state':'OPEN','mergeStateStatus':'CLEAN' if clean else 'DIRTY','mergeable':'MERGEABLE' if clean else 'CONFLICTING'})); sys.exit(0)\n"
+                                "print('[]')\n")
         dos_dir = os.path.join(root, ".discovery", "dossiers"); os.makedirs(dos_dir, exist_ok=True)
         open(os.path.join(dos_dir, "W-43-ci.md"), "w").write("---\nid: W-43\nstatus: ready\n---\n")
         for dos, prs, want in (("W-43", "ci:71", ["CI RESULT 71: green all green"]),
@@ -5183,17 +5283,41 @@ def selftest() -> int:
                                ("W-45", "ci:73", ["CI RESULT 73: timeout still pending"]),
                                ("W-48", "ci:75", ["CI RESULT 75: never-started CI did not run on #75 (it did not fail): no run for the head",
                                                   "RUNNER: FAILED CI never started on PR #75"]),
-                               ("W-50", "ci:76", ["CI RESULT 76: never-started CI did not run on #76 (it did not fail): PR stacked on #620, which conflicts"]),
+                               ("W-50", "ci:76", ["CI RESULT 76: green all green"]),
+                               ("W-51", "ci:77", ["CI RESULT 77: never-started CI did not run on #77 (it did not fail): PR #77 is stacked on #621"]),
                                ("W-46", "ci:71,ci:72,ci:74", ["CI RESULT 71: green", "CI RESULT 72: red", "CI RESULT 74: red (wait_ci exit 5) conflicting"])):
             scenario([{"turns": [[{"final": f"pushed\nRUNNER: WAITING {prs}"}], [{"final": "RUNNER: DONE"}]]}])
-            env.update(ASD_WAIT_CI_BIN=ci_fake, ASD_CI_TIMEOUT="123")
+            env.update(ASD_WAIT_CI_BIN=ci_fake, ASD_CI_TIMEOUT="123", ASD_PARENT_RESOLVE_BIN=f"{sys.executable} {res_fake}",
+                       ASD_GH_BIN=f"{sys.executable} {gh_par}", ASD_PARENT_POLL="0.2", ASD_PARENT_GRACE="0.3")
             p = start(dos)
             rc = p.wait(timeout=60)
-            env.pop("ASD_WAIT_CI_BIN"); env.pop("ASD_CI_TIMEOUT")
+            for k_ in ("ASD_WAIT_CI_BIN", "ASD_CI_TIMEOUT", "ASD_PARENT_RESOLVE_BIN", "ASD_GH_BIN", "ASD_PARENT_POLL", "ASD_PARENT_GRACE"):
+                env.pop(k_)
             sent = "\n".join(m for m in msgs(1) if m.startswith("CI RESULT"))
             check(f"ci breakpoint {prs}: waits without a question and sends {' / '.join(w.split(':')[0] + ':' + w.split(':')[1] for w in want)}",
                   rc == 0 and all(w in sent for w in want) and any(t.startswith("waiting on CI #") for t in texts(dos))
                   and not any("asked" in t for t in texts(dos)))
+            if not (rc == 0 and all(w in sent for w in want)):
+                print(f"   debug {dos}: rc={rc} sent={sent!r} texts={texts(dos)[-8:]}")
+        res_args = open(os.path.join(tmp, "resolve.args")).read()
+        check("ci parent conflict: the runner starts one resolve-merge run for the parent (not the child, not the queue) and the session is told nothing until CI answers",
+              res_args.count("--command resolve-merge --items 620 ") == 1 and "W-50 " in res_args and "--items 76" not in res_args
+              and any(t.startswith("parent #620 conflicts") and "no owner question" in t for t in texts("W-50"))
+              and any(t.startswith("parent #620 no longer conflicts") for t in texts("W-50")))
+        check("ci parent conflict: a parent the run could not resolve gives the session a never-started verdict that forbids resolving it itself or asking the owner",
+              "--items 621" in res_args and not any("asked" in t for t in texts("W-51")))
+        check("ci parent conflict: the verdict for a parent the runner could not resolve tells the session not to resolve it or ask",
+              "do NOT resolve it yourself" in CI_PARENT_NEXT and "do NOT ask the owner" in CI_PARENT_NEXT)
+        # exit 7 is not exit 6: a second wait on the parent-blocked PR is not refused
+        scenario([{"turns": [[{"final": "RUNNER: WAITING ci:77"}], [{"final": "RUNNER: WAITING ci:77"}], [{"final": "RUNNER: DONE"}]]}])
+        env.update(ASD_WAIT_CI_BIN=ci_fake, ASD_CI_TIMEOUT="123", ASD_PARENT_RESOLVE_BIN=f"{sys.executable} {res_fake}",
+                   ASD_GH_BIN=f"{sys.executable} {gh_par}", ASD_PARENT_POLL="0.2", ASD_PARENT_GRACE="0.3")
+        rc = start("W-52").wait(timeout=90)
+        for k_ in ("ASD_WAIT_CI_BIN", "ASD_CI_TIMEOUT", "ASD_PARENT_RESOLVE_BIN", "ASD_GH_BIN", "ASD_PARENT_POLL", "ASD_PARENT_GRACE"):
+            env.pop(k_)
+        sent52 = [m for m in msgs(1) if m.startswith("CI RESULT 77")]
+        check("ci parent conflict: the repeated wait after a parent verdict is not refused (the never-started guard is for exit 6 only)",
+              rc == 0 and len(sent52) == 2 and not any("refused" in m for m in sent52))
         # the session waits on a never-started PR again anyway: refused, wait_ci not run a second time
         n75_before = open(os.path.join(tmp, "ci.args")).read().count("--pr 75")
         scenario([{"turns": [[{"final": "RUNNER: WAITING ci:75"}], [{"final": "RUNNER: WAITING ci:75"}], [{"final": "RUNNER: DONE"}]]}])
@@ -5311,6 +5435,17 @@ def selftest() -> int:
                                                 J({"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "k1", "content": res, "is_error": err}]}})]
         check("background: a command moved to the background after its timeout is in flight, with its output path", [t["output"] for t in background_tasks(mv)] == ["/tmp/x/tasks/mv1.output"])
         check("background: each task carries the tool that launched it", [t["tool"] for t in background_tasks(mv)] == ["Bash"])
+        rw = object.__new__(Runner)
+        rw.turn_open, rw.stopping, rw.state = True, False, {"state": "testing"}
+        setattr(rw, "proc", type("P", (), {"poll": lambda self: None})())
+        rw.last_out = rw.last_work = time.monotonic() - 73 * 60
+        rw.inflight_bash = {"t1": ("python3 fix_deferred_pr.py --root . --dossier W-182", time.monotonic() - 73 * 60)}
+        rw.bg_wait, rw.stall_bg_at = "x", 0.0
+        rw.background = lambda: []
+        check("stall watchdog: the previous process's 73 minute old Bash call reads as hung", rw.hung_bash(45 * 60) != "" and rw.stalled())
+        rw.reset_watchdog()
+        check("stall watchdog: a new process starts with a fresh idle clock and no Bash call in flight",
+              rw.hung_bash(45 * 60) == "" and not rw.inflight_bash and not rw.stalled() and rw.bg_wait == "")
         rb = object.__new__(Runner)
         rb.turn_open, rb.inflight_bash, rb.bg_wait = False, {}, "background: Wait for PR 518 CI"
         check("background wait: a closed turn waiting only on background commands is blocked (slot released)", rb.blocked_on() == "background: Wait for PR 518 CI")
