@@ -1,6 +1,6 @@
 // Owner-questions server. Run: bun --no-install shared/questions/server.ts
 // Contract: references/owner-questions.md
-import { appendFileSync, mkdirSync, openSync, readdirSync, statSync, watch, writeFileSync } from "node:fs"
+import { appendFileSync, existsSync, mkdirSync, openSync, readdirSync, statSync, watch, writeFileSync } from "node:fs"
 import { AnsweredError, appendOwner, idForThread, readAll, readAllAsync, readQuestion, readSidecarAsync, readSidecar, storeDir, writeSidecar, type Line, type Question } from "./store.ts"
 import { PAGE } from "./page.ts"
 import { addRuling, readRulings, removeRuling } from "./rulings.ts"
@@ -20,6 +20,7 @@ import { startLagWatch } from "./lagwatch.ts"
 import { archStemOf, collapsedView, hasVisualReview, visualReview, vrDir } from "./vrlayout.ts"
 import { hasPacket, packetCache, packetDir, packetSignature, readPacket } from "./packet.ts"
 import { makeVrCache, vrSignature } from "./vrcache.ts"
+import { PREVIEW_ALL_DIR, readParts, readPreviewComments, writePreviewComment } from "./vrparts.ts"
 import type { Note } from "./vrreview.ts"
 import { approveAll, buildAnswer, diagramsOf, dossierIntent, MAX_BODY, MAX_FEEDBACK_BODY, ReviewError, isReviewQuestion, readReview, reviewOptions, reviewState, setVerdict, submitFeedback } from "./vrreview.ts"
 import { collapsedDiagram, DiagramError, mapStatus, openDiagram } from "./vrmap.ts"
@@ -519,8 +520,30 @@ export async function handle(req: Request): Promise<Response> {
   if (req.method === "GET" && path === "/api/visual-review") {
     const f = await vrFind(url.searchParams.get("dossier") ?? "", url.searchParams.get("repo") ?? "")
     if (!f.ok) return json({ error: f.error }, f.status)
-    try { return json({ ...(await vrReviewCache.get(vrDir(f.root, f.dossier), vrSignature(vrDir(f.root, f.dossier)), () => visualReview(vrDir(f.root, f.dossier), f.dossier))), review: reviewState(vrDir(f.root, f.dossier), f.dossier), intent: dossierIntent(f.root, vrDir(f.root, f.dossier), f.dossier) }) } catch (e) { return json({ error: "visual review failed: " + (e as Error).message }, 500) }
+    // `set=preview-all`: the separate "All diagrams (preview)" view (vr_preview_all.py): its own directory, never an approval
+    // (no review state, no approval controls), with the comment boxes of every part.
+    if (url.searchParams.get("set") === "preview-all") {
+      const pdir = join(vrDir(f.root, f.dossier), PREVIEW_ALL_DIR)
+      try { return json({ ...(await vrReviewCache.get(pdir, vrSignature(pdir), () => visualReview(pdir, f.dossier))), review: null, previewAll: true, parts: readParts(pdir), comments: readPreviewComments(pdir) }) } catch (e) { return json({ error: "preview failed: " + (e as Error).message }, 500) }
+    }
+    const dir = vrDir(f.root, f.dossier)
+    try { return json({ ...(await vrReviewCache.get(dir, vrSignature(dir), () => visualReview(dir, f.dossier))), review: reviewState(dir, f.dossier), intent: dossierIntent(f.root, dir, f.dossier), parts: readParts(dir), hasPreviewAll: existsSync(join(dir, PREVIEW_ALL_DIR, "parts.json")) }) } catch (e) { return json({ error: "visual review failed: " + (e as Error).message }, 500) }
   }
+  // A comment on one part of the preview (kept beside the preview, not in review.json: a preview is never an approval).
+  if (path === "/api/visual-review/preview-comment") {
+    if (req.method !== "POST") return json({ error: "method not allowed" }, 405)
+    const origin = req.headers.get("origin")
+    if (origin && origin !== `http://${host}`) return json({ error: "bad origin" }, 403)
+    const raw = await req.text()
+    if (raw.length > MAX_FEEDBACK_BODY) return json({ error: "body is larger than " + MAX_FEEDBACK_BODY + " bytes" }, 413)
+    let b: any
+    try { b = JSON.parse(raw) } catch { return json({ error: "body must be JSON" }, 400) }
+    if (!b || typeof b !== "object" || Array.isArray(b)) return json({ error: "body must be a JSON object" }, 400)
+    const f = await vrFind(typeof b.dossier === "string" ? b.dossier : "", typeof b.repo === "string" ? b.repo : "")
+    if (!f.ok) return json({ error: f.error }, f.status)
+    try { return json({ ok: true, comments: writePreviewComment(join(vrDir(f.root, f.dossier), PREVIEW_ALL_DIR), b.part, b.comment) }) } catch (e) { return json({ error: (e as Error).message }, 400) }
+  }
+
   // The same view with some groups collapsed to one box: the collapsed graph and its layout (the page only draws it).
   if (req.method === "GET" && path === "/api/visual-review/layout" && url.searchParams.has("path")) {
     // A committed diagram of a repo (the product map), folded the same way: `repo` + `path` instead of `dossier` + `view`.
