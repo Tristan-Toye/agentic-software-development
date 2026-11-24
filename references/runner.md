@@ -769,6 +769,8 @@ not at `pr`/`done` first gets one `run_dossier.py chat` message to its own sessi
 reply, no reply within `ASD_AUTO_WORK_ASK_WAIT` seconds (default 1800), or a failed chat. See `references/owner-questions.md`
 (Dashboard, Automatic work) for the cycle.
 
+Every pause also raises one owner question (product kind, topic `auto-work-pause`, on the member's dossier or `auto-work` for a repo-level stop; the id is kept in `paused.question`, so never twice for one pause): A resumes (for an `accept` pause A accepts the still-open items, B relaunches the run), the last option leaves it paused. Answering applies the action as `--resume` does; `--resume` or the Resume button closes the open question.
+
 Eager merge is a second, separate switch (`auto_work.py --eager-merge on|off --root R`,
 on by default, works with automatic work off): each dossier that is finished (build
 done, fix-deferred run over, no open deferred item) and has an open pull request into
