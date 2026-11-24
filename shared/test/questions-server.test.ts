@@ -18,7 +18,7 @@ import { mergeTimeline, parseRecord, logEntries, classify, groupByPhase, nowPane
 import { blockedByOf, controlsFor, runTarget } from "../questions/controls.ts"
 import { readAccounts } from "../questions/accounts.ts"
 import { execFileSync } from "node:child_process"
-import { planningRuns } from "../questions/planning.ts"
+import { planningRuns, planningRunsAsync } from "../questions/planning.ts"
 import { flowsOf, flowViews, setFlow } from "../questions/deliveryflows.ts"
 import { argvFor, autoWorkOn, buildFacts, eagerMergeOn, factsOn, markMerged, readAutoState, viewsFor } from "../questions/autowork.ts"
 
@@ -709,6 +709,7 @@ check("timeline: a step line and a counted suite result are on the timeline; a b
     const pl = planningRuns("r", fx)
     check("planning: live seed / plan-D runs name their claimed ids; finished, stopped and work-on runs do not (same fixture as planning_runs.py --selftest)",
       Object.keys(pl).sort().join() === "K-13,W-218" && pl["W-218"].key === "r.seed-webhook-rate-limit" && pl["K-13"].key === "r.K-2.plan-D-1" && pl["W-218"].state === "running" && pl["K-13"].state === "queued", JSON.stringify(pl))
+    check("planning: the async read (used per request, no sync fs) returns the same claims, twice (cached)", JSON.stringify(await planningRunsAsync("r", fx)) === JSON.stringify(pl) && JSON.stringify(await planningRunsAsync("r", fx)) === JSON.stringify(pl))
     const live = controlsFor({ status: "planned", blockedBy: [], runner: null, planning: pl["W-218"] }, st({}))
     check("planning: a planned dossier claimed by a live seed run offers no Start or Resume", !live.start.show && !live.resume.show)
     const dup = controlsFor({ status: "planned", blockedBy: [], runner: { state: "running", command: "plan" } as any, planning: pl["W-218"] }, st({}))

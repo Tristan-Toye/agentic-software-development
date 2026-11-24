@@ -1,5 +1,6 @@
 // Run updates store, runner state, dossier summary and a tiny markdown renderer. Contract: references/runner.md, references/owner-questions.md (Dashboard).
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs"
+import { mkdir, rename, writeFile } from "node:fs/promises"
 import { homedir } from "node:os"
 import { join } from "node:path"
 import { fileSig, readText } from "./asyncio.ts"
@@ -316,6 +317,11 @@ export function viewCacheDir(): string | null {
 export function readViewCache<T>(name: string): T | null {
   const d = viewCacheDir(); if (!d) return null
   try { return JSON.parse(readFileSync(join(d, `${name}.json`), "utf8")) as T } catch { return null }
+}
+/** `writeViewCache` without a synchronous write: the stringify stays here, the disk write is async (a busy disk never holds the loop). */
+export async function writeViewCacheAsync(name: string, v: unknown): Promise<void> {
+  const d = viewCacheDir(); if (!d) return
+  try { const body = JSON.stringify(v); await mkdir(d, { recursive: true }); const f = join(d, `${name}.json`); await writeFile(f + ".tmp", body); await rename(f + ".tmp", f) } catch { /* a cache */ }
 }
 export function writeViewCache(name: string, v: unknown): void {
   const d = viewCacheDir(); if (!d) return
