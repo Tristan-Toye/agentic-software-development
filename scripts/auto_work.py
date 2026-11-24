@@ -102,7 +102,15 @@ logout), `run_dossier.py revive` restarts them within moments, so a member whose
 (`ASD_AUTO_WORK_GRACE`, tracked in the member's `restarting`) and the cycle pauses only when it is still dead after that.
 A pause of kind `member` with action `relaunch` heals itself on a later tick: when that member's run is live again, or its
 /work-on dossier reached `pr`/`done`, the pause is cleared and the cycle goes on; the state keeps a `healed` note with the former
-reason. Other pause kinds are never cleared here.
+reason. Other pause kinds are never cleared here. The same heal clears the pause (and closes its open auto-work-pause question
+with an agent answer) when the failed run asked the owner its own run-failure question and waits on it.
+
+# A failed run that asked the owner itself
+
+run_dossier.py `ask_failure` records the state `failed`, saves its run-failure question in runner.json (`questions`) and stays
+alive waiting on the answer. While that process is alive and the question unanswered, the member is "waiting on <question>":
+no pause, no question of auto work, no second run. Retry brings the run back to running; Stop ends it failed with no open
+question, and the usual pause and auto-work-pause question follow.
 """
 from __future__ import annotations
 
@@ -518,6 +526,33 @@ def killed_not_stopped(st: dict, m: dict) -> bool:
     return rj.get("state") in LIVE
 
 
+def own_question(st: dict, member: str, r: dict | None = None) -> str:
+    """The open owner question of the member's own failed run, or "". The runner (run_dossier.py ask_failure) saves the
+    run-failure question in its runner.json (`questions`), records the state `failed` and stays alive waiting on the
+    answer: such a run is not dead, the owner is deciding. "" when the process is gone (a killed run: the pause path
+    applies), when the record is not a failed one, or when every question of the run is answered."""
+    rj = read_json(os.path.join(runs_dir(), f"{st['repo']}.{member}.runner.json"), {}) or {}
+    if rj.get("state") != "failed":
+        return ""
+    try:
+        pid = int(rj.get("pid") or (r or {}).get("pid") or 0)
+        if pid < 1:
+            return ""
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return ""
+    except (OSError, ValueError):
+        pass   # EPERM: the process exists
+    import ask_owner
+    for q in rj.get("questions") or []:
+        try:
+            if ask_owner.final_answer(ask_owner.read_lines(str(q))) is None:
+                return str(q)
+        except (SystemExit, OSError):
+            continue
+    return ""
+
+
 def heal(st: dict, facts: dict) -> None:
     """Clear a pause of kind member / action relaunch once that member's run is live again (revive restarted it) or its
     dossier reached pr/done. Every other pause kind waits for the owner."""
@@ -528,7 +563,8 @@ def heal(st: dict, facts: dict) -> None:
     if not run:
         return
     rs = (run.get("runner") or {}).get("state")
-    live = rs in LIVE
+    own = own_question(st, p["member"], run.get("runner") or {}) if rs == "failed" else ""
+    live = rs in LIVE or bool(own)   # the run waits on its own failure question: the owner decides there, the pause is a duplicate
     mem = next((m for m in st["members"] if m["id"] == p["member"]), {})
     # pr/done only counts for a /work-on: a /fix-deferred starts from a dossier that is already at pr
     built = run.get("status") in ("pr", "done") and (mem.get("launch") or {}).get("command", "work-on") == "work-on" and rs != "failed"
@@ -536,10 +572,11 @@ def heal(st: dict, facts: dict) -> None:
         return
     for m in st["members"]:
         if m["id"] == p["member"]:
-            m["error"], m["state"], m["lag"] = "", "running" if live else "pending", 0
+            m["error"], m["state"], m["lag"] = "", (f"waiting on {own}" if own else "running" if live else "pending"), 0
             m.pop("restarting", None)
     st["healed"] = {"at": now(), "member": p["member"], "was": p.get("reason", ""),
-                    "because": "its run is live again" if live else f"its dossier reads {run.get('status')}"}
+                    "because": f"its run waits on its own question {own}" if own else "its run is live again" if live else f"its dossier reads {run.get('status')}"}
+    close_pause_question(p, "The run continued on its own (" + (f"it waits on its own question {own}" if own else "it is live again") + "); no relaunch is needed and this question is closed.")
     st["paused"], st["phase"] = None, ""
 
 
@@ -567,6 +604,12 @@ def step_member(st: dict, m: dict, run: dict | None) -> None:
         m["state"] = {"queued": "queued for a slot", "waiting": "waiting for the owner", "paused": "paused (usage limit)",
                       "parked": "waiting for its blockers"}.get(r["state"], "running")
         m["lag"], m["retried"] = 0, False
+        m.pop("restarting", None)
+        return
+    if r.get("state") == "failed" and (q := own_question(st, m["id"], r)):
+        # The run failed and asked the owner itself (run-failure question) and its process waits on the answer: no pause,
+        # no question of ours, never a second run. Retry brings the state back to running; Stop ends it failed, no question.
+        m["state"], m["error"], m["lag"] = f"waiting on {q}", "", 0
         m.pop("restarting", None)
         return
     if L and not fresh(m, r):
@@ -1398,6 +1441,52 @@ def selftest() -> int:
         check("heal: other pause kinds and actions are never cleared",
               all(h({**pz, **o}, {"id": "Z", "status": "done", "runner": {"state": "running"}})["paused"] is not None
                   for o in ({"kind": "docs"}, {"kind": "stub-run"}, {"action": "accept"}, {"action": "recheck"})))
+        # A failed run that asked the owner itself (run-failure question) and waits on it: no pause, no second question, no second run.
+        def own_q(n, answered=False):
+            qid = f"{repo}.Z.Q{n}"
+            with open(os.path.join(qdir, qid + ".jsonl"), "w") as f:
+                f.write(json.dumps({"kind": "question", "topic": "run-failure", "text": "The run of Z failed at stage 2: x", "dossier": "Z", "repo": repo}) + "\n")
+                if answered:
+                    f.write(json.dumps({"kind": "answer", "from": "owner", "option": "B", "text": "Stop"}) + "\n")
+            return qid
+        def zrunner(state, pid, questions):
+            json.dump({"state": state, "pid": pid, "command": "fix-deferred", "questions": questions}, open(P(f"{repo}.Z.runner.json"), "w"))
+        def zstate(rstate="failed", pid=None):
+            s_ = {"repo": repo, "root": root, "members": [{"id": "Z", "stage": "fix", "state": "running", "error": "", "lag": 0, "retried": False,
+                  "launch": {"command": "fix-deferred", "items": "D-1", "ts": now(), "pid": 1, "started": "t0"}}], "paused": None, "phase": "", "step": "work"}
+            step_member(s_, s_["members"][0], {"id": "Z", "status": "pr", "runner": {"state": rstate, "command": "fix-deferred", "pid": pid or os.getpid(), "started": "t"}, "deferred": [{"id": "D-1", "state": "open"}]})
+            return s_
+        n_log = len(log())
+        q6 = own_q(6)
+        zrunner("failed", os.getpid(), [q6])
+        s_ = zstate()
+        check("failed run with an open question of its own and a live runner: no pause, no question of ours, the member waits on it",
+              s_["paused"] is None and s_["members"][0]["state"] == f"waiting on {q6}" and not [f for f in os.listdir(qdir) if f.startswith(f"{repo}.Z.Q7")] and len(log()) == n_log, (s_["paused"], s_["members"][0]))
+        check("the waiting member is never relaunched (no second run while the runner is alive)", len(log()) == n_log and s_["members"][0]["launch"]["pid"] == 1)
+        # runner back to running: treated normally (waiting for nothing, running)
+        zrunner("running", os.getpid(), []); s_ = zstate("running")
+        check("the run continues (Retry): the member is a normal running member again", s_["paused"] is None and s_["members"][0]["state"] == "running", s_["members"][0])
+        # The owner answered Stop: the run ended failed, no open question: the existing pause applies.
+        q8 = own_q(8, answered=True); zrunner("failed", os.getpid(), [q8]); s_ = zstate()
+        check("the owner answered Stop (failed, its question answered): the cycle pauses as before", bool(s_["paused"]) and "ended failed" in s_["paused"]["reason"], s_["paused"])
+        # The runner process is gone although it left a question open: that is a dead run, not a waiting one.
+        zrunner("failed", 2 ** 22 + 12345, [own_q(9)]); s_ = zstate(pid=2 ** 22 + 12345)
+        check("a dead runner with an open question still pauses (nobody is waiting on it)", bool(s_["paused"]), s_["members"][0])
+        # Self-heal of an existing duplicate: paused for Z, the run is live again, the auto-work-pause question is open.
+        zrunner("running", os.getpid(), [])
+        dupe = {"repo": repo, "root": root, "members": [{"id": "Z", "state": "failed", "error": "x", "lag": 0}], "paused": None, "phase": "", "step": "work"}
+        pause(dupe, "Z: the /fix-deferred run ended failed", "member", "Z"); pause_question(dupe)
+        dq = dupe["paused"]["question"]
+        heal(dupe, {"runs": [{"id": "Z", "status": "pr", "runner": {"state": "running", "command": "fix-deferred", "pid": os.getpid()}}]})
+        dl = [json.loads(x) for x in open(os.path.join(qdir, dq + ".jsonl"))]
+        check("self-heal: a pause for a member whose run is live again clears itself, with no relaunch, and closes its question with an agent answer",
+              dupe["paused"] is None and dupe["members"][0]["state"] == "running" and len(log()) == n_log
+              and dl[-1].get("kind") == "answer" and dl[-1].get("from") == "agent" and "continued" in dl[-1]["text"], (dupe["paused"], dl[-1]))
+        for rs_ in ("testing", "waiting", "queued"):
+            d2 = {"repo": repo, "root": root, "members": [{"id": "Z", "state": "failed", "error": "x", "lag": 0}], "paused": None, "phase": ""}
+            pause(d2, "Z: ended failed", "member", "Z"); heal(d2, {"runs": [{"id": "Z", "status": "pr", "runner": {"state": rs_}}]})
+            check(f"self-heal: a {rs_} run clears the pause", d2["paused"] is None)
+        # The duplicate through the tick: paused with the open question, run running again: the tick clears it and closes the question.
         # F's rerun finishes; D's fix-deferred is done with only a dropped item.
         setrun("F", status="done", runner=runner("done", "fix-deferred", pid=303, started="2026-11-17T11:10:00Z"), deferred=[{"id": "D-1", "state": "fixed"}])
         n_before = len(log()); tk()
