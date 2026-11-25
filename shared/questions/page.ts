@@ -1241,6 +1241,12 @@ function stubRow(repo, id, o) {
   return h('a', { class: 'srow' + (o.merged ? ' done' : ''), href: hrefItem(repo, id), 'data-k': 'srow:' + repo + '/' + id, title: id + (title ? ' · ' + title : '') },
     [h('span', { class: 'sid mono' }, [id]), h('span', { class: 'sname' }, [title || '—']), h('span', { class: 'sright' }, right)]);
 }
+/* A numbered /plan run on its stub card: the id it claimed, its title, planning. No link: the dossier page exists once the plan writes the file. */
+function planStubRow(p) {
+  const right = [activityOf({ command: 'plan', state: p.state }, '', '')];
+  return h('div', { class: 'srow', 'data-k': 'srow:' + p.repo + '/' + p.claimed, title: p.claimed + ' · planned by ' + p.item + (p.title ? ' · ' + p.title : '') },
+    [h('span', { class: 'sid mono' }, [p.claimed]), h('span', { class: 'sname' }, ['Planning: ' + (p.title || p.item)]), h('span', { class: 'sright' }, right)]);
+}
 function stubGroup(key, label, rows, fold) {
   if (!rows.length) return null;
   const body = h('div', { class: 'srows' }, rows);
@@ -1282,7 +1288,11 @@ function stubTree(repo, s) {
     if (r.runner) return ['running', 'testing', 'waiting', 'paused', 'queued'].includes(r.runner.state);
     return !!(r.session && r.session.state === 'active'); };
   const mem = s.members || [];
-  const busy = mem.filter(m => working(m.id)).map(m => stubRow(repo, m.id, { noPr: m.noPr, working: true }));
+  // A /plan run that already numbered its dossier (a seed plan's claimed id) is new work for the current stub, before its
+  // dossier file exists anywhere the stub list reads: it is a Working row here, not only a row of the Planning section.
+  const memIds = new Set(mem.map(m => m.id)), os0 = openStubs(repo)[0];
+  const planning = os0 && os0.branch === s.branch ? (S.plans || []).filter(p => p.repo === repo && p.claimed && !memIds.has(p.claimed)).map(planStubRow) : [];
+  const busy = planning.concat(mem.filter(m => working(m.id)).map(m => stubRow(repo, m.id, { noPr: m.noPr, working: true })));
   const idle = mem.filter(m => !working(m.id)).map(m => stubRow(repo, m.id, { noPr: m.noPr }));
   const merged = s.dossiers.map(d => stubRow(repo, d.id, { merged: true, title: d.title }));
   const k = 'sg:' + repo + '/' + s.branch + ':';
@@ -1401,7 +1411,8 @@ function repoView(repo) {
   if (oq.length) kids.push(section('Waiting on you', oq.length, h('div', {}, oq.map(q => qCard(q, { thread: true }))), 'oq'));
   const frame = ow ? h('iframe', { class: 'report', 'data-repo': repo, src: '/open-work/' + enc(repo) + '?theme=dark&v=' + enc(ow.updated), title: 'Open work', scrolling: 'no', style: S.frameH[repo] ? 'height:' + S.frameH[repo] + 'px' : null }) : h('div', { class: 'empty' }, ['The open-work report is not generated yet.']);
   // A /plan run writing a new dossier has no dossier file yet, so neither the stubs nor Open work list it: show it here.
-  const pl = (S.plans || []).filter(p => p.repo === repo);
+  // One that already numbered its dossier sits on the current stub's card instead (planStubRow), when there is an open stub.
+  const pl = (S.plans || []).filter(p => p.repo === repo && !(p.claimed && os.length));
   if (pl.length) kids.push(section('Planning', pl.length, h('div', { class: 'srows' }, pl.map(planRow)), 'plans'));
   // The stubs (the current one and the next) first, then Open work, each full width, one under the other.
   kids.push(sideColumn(repo));
