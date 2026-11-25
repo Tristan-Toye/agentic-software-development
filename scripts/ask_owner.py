@@ -137,7 +137,12 @@ def parse_option(spec: str) -> dict:
     parts = spec.split("|", 2)
     if len(parts) != 3 or not all(p.strip() for p in parts):
         raise SystemExit(f"option must be KEY|label|consequence: {spec!r}")
-    return {"key": parts[0].strip(), "label": parts[1].strip(), "consequence": parts[2].strip()}
+    label, cons = parts[1].strip(), parts[2].strip()
+    # A placeholder option ("A|a|b") reaches the owner as a button that means nothing (podcast W-024.Q2): refuse it.
+    if len(label) < 2 or len(cons) < 2:
+        raise SystemExit(f"option {parts[0].strip()!r} looks like a placeholder (label {label!r}, consequence {cons!r}): "
+                         "give the real choice and what follows from it")
+    return {"key": parts[0].strip(), "label": label, "consequence": cons}
 
 
 # ---------------------------------------------------------------- the approval lint
@@ -570,6 +575,9 @@ def selftest() -> int:
         bad = run("ask", "--root", root, "--dossier", "W-1", "--question", "x", "--option",
                   "A|a|b", "--option", "Bnolabel", "--blocks", "y", env=env)
         check("malformed option refused", bad.returncode != 0)
+        bad = run("ask", "--root", root, "--dossier", "W-1", "--question", "x?", "--option", "A|a|b", "--option",
+                  "B|Keep the heartbeat|the design stays", "--blocks", "y", env=env)
+        check("a placeholder option (A|a|b) is refused", bad.returncode != 0 and "placeholder" in bad.stderr)
 
         procs = [subprocess.Popen([sys.executable, me, *base], env=env, stdout=subprocess.PIPE, text=True)
                  for _ in range(2)]
@@ -583,7 +591,7 @@ def selftest() -> int:
         r = run("reply", qid, "--text", "So you mean: keep the overlap.", "--option", "D|Confirm: keep the overlap|the turn does not wait", env=env)
         last = json.loads(open(path).read().splitlines()[-1])
         check("a reply can add a button", r.returncode == 0 and last.get("options") == [{"key": "D", "label": "Confirm: keep the overlap", "consequence": "the turn does not wait"}])
-        check("a reply cannot reuse an option key", run("reply", qid, "--text", "x", "--option", "A|again|c", env=env).returncode != 0)
+        check("a reply cannot reuse an option key", run("reply", qid, "--text", "x", "--option", "A|Again|reuses a key", env=env).returncode != 0)
         r = run("reply", qid, "--text", "Having measured it, D is better.", "--recommend", "D", env=env)
         check("a reply can move the recommendation to an option that exists", r.returncode == 0 and json.loads(open(path).read().splitlines()[-1]).get("recommend") == "D")
         check("a reply cannot recommend an option that does not exist", run("reply", qid, "--text", "x", "--recommend", "Z", env=env).returncode != 0)
@@ -640,7 +648,7 @@ def selftest() -> int:
         wt = os.path.join(tmp, "mainrepo-W-7")
         subprocess.run(["git", "-C", main, "worktree", "add", "-q", wt], check=True)
         check("a worktree is keyed by its main checkout", main_repo_name(wt) == "mainrepo" and main_repo_name(main) == "mainrepo")
-        wq = run("ask", "--root", wt, "--dossier", "W-7", "--question", "q?", "--option", "A|a|x", "--option", "B|b|y", "--blocks", "z", env=env).stdout.strip()
+        wq = run("ask", "--root", wt, "--dossier", "W-7", "--question", "q?", "--option", "A|Keep it|the run goes on", "--option", "B|Drop it|the run stops", "--blocks", "z", env=env).stdout.strip()
         check("a question asked from a worktree carries the repo name", wq == "mainrepo.W-7.Q1")
 
         # --build-log: the QUESTION and OWNER-RULING lines the dashboard parses
