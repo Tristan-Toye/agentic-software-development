@@ -282,7 +282,7 @@ export async function buildStubsWithRoots(questions: Question[], now = Date.now(
     const ans = answeredBy(questions, (q) => questionInRepo(q, baseName(main), main))
     if (noGit() || !existsSync(join(main, ".git"))) continue
     await fetchStubRefs(main)
-    const docs: Doc[] = await withBranchCopies(main, pickDossiers(wts))
+    const docs: Doc[] = await withBranchCopies(main, pickDossiers(wts, main))
     const byId = new Map(docs.map((d) => [d.front.id!, d]))
     const prToDossier = new Map<number, string>()
     for (const d of docs) for (const n of prFieldNumbers(d.front.pr)) prToDossier.set(n, d.front.id!)

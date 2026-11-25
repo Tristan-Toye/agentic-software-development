@@ -389,6 +389,16 @@ check("runs: a wrapped last entry is joined, a trailing fence skipped", lastLine
 const picked = pickDossiers([repoA, repoB])
 const w7 = picked.find((d) => d.front.id === "W-7")!
 check("runs: longest build log wins and records its worktree", picked.length === 2 && w7.worktree === repoB && w7.front.status === "building")
+{ // A stale worktree holds another dossier that once had the id W-7 (before a renumber): with the main checkout named, its longer log never wins.
+  const sdir = mkdtempSync(join(tmpdir(), "asd-oq-slug-")), mainCo = join(sdir, "main"), staleWt = join(sdir, "stale")
+  for (const r of [mainCo, staleWt]) mkdirSync(join(r, ".discovery", "dossiers"), { recursive: true })
+  writeFileSync(join(mainCo, ".discovery", "dossiers", "W-7-seven.md"), dossier("ready", "- started\n"))
+  writeFileSync(join(staleWt, ".discovery", "dossiers", "W-7-other-plan.md"), dossier("ready", "- a\n- b\n- c\n- d\n- e\n- f\n"))
+  const withMain = pickDossiers([mainCo, staleWt], mainCo).find((d) => d.front.id === "W-7")!
+  const without = pickDossiers([mainCo, staleWt]).find((d) => d.front.id === "W-7")!
+  check("runs: a same-id copy under another file name than the main checkout's never wins", withMain.worktree === mainCo && withMain.file.endsWith("W-7-seven.md") && without.worktree === staleWt)
+  rmSync(sdir, { recursive: true, force: true })
+}
 const projects = join(rdir, "projects"), pdir = join(projects, "-x-repoB")
 mkdirSync(pdir, { recursive: true })
 const tl = (o: object) => JSON.stringify(o) + "\n"
