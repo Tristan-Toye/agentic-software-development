@@ -374,11 +374,19 @@ export function dossiersIn(root: string): { front: Front; text: string; file: st
   return out
 }
 
-/** Per id, the copy with the longest build log wins (ties: first in sorted worktree order). */
-export function pickDossiers(roots: string[]): { front: Front; text: string; file: string; worktree: string }[] {
+/**
+ * Per id, the copy with the longest build log wins (ties: first in sorted worktree order).
+ * With `main`, a copy whose file name differs from the main checkout's file for that id is another dossier that once had
+ * the same id (a stale worktree from before a renumber) and never wins.
+ */
+export function pickDossiers(roots: string[], main = ""): { front: Front; text: string; file: string; worktree: string }[] {
   const best = new Map<string, { front: Front; text: string; file: string; worktree: string; len: number }>()
+  const mainName = new Map<string, string>()
+  if (main) for (const d of dossiersIn(main)) mainName.set(d.front.id!, baseName(d.file))
   for (const wt of [...new Set(roots)].sort()) {
     for (const d of dossiersIn(wt)) {
+      const own = mainName.get(d.front.id!)
+      if (own && own !== baseName(d.file)) continue
       const len = logLength(d.text)
       const cur = best.get(d.front.id!)
       if (!cur || len > cur.len) best.set(d.front.id!, { ...d, worktree: wt, len })
@@ -467,7 +475,7 @@ export async function pickDossiersByRepo(roots: string[], mainFor: (wt: string) 
     byMain.set(m, [...(byMain.get(m) ?? []), wt])
   }
   const out: { main: string; front: Front; text: string; file: string; worktree: string }[] = []
-  for (const [main, wts] of byMain) for (const d of await withBranchCopies(main, pickDossiers(wts))) out.push({ ...d, main })
+  for (const [main, wts] of byMain) for (const d of await withBranchCopies(main, pickDossiers(wts, main))) out.push({ ...d, main })
   return out
 }
 
