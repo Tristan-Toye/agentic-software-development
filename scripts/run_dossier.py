@@ -3383,6 +3383,12 @@ class Runner:
             self.save(stage=started, questions=[])
             if not self.take_slot(rehome=True):
                 return self.finish("stopped", "stopped", 3)
+            if started == 1 and self.command in ("plan", "work-on") and not self.items and not SEED_RE.fullmatch(self.dossier):
+                # The launch check ran before the queue: a seed run may have claimed this id while this run waited for a
+                # slot (podcast W-037, 2026-11-25). Check again before spending anything; the claiming run owns the dossier.
+                why = planning_runs.claimed_why(main_repo_name(self.root), runs_dir(), self.dossier, self.key)
+                if why:
+                    return self.finish("done", f"not started: {why}", 0)
             self.event(f"stage {started} start", "running")
             self.repair_env(f"stage {started} start")
             free = disk_free_gib(self.root)
@@ -5090,7 +5096,22 @@ def selftest() -> int:
         check("slots: with every slot taken the run is queued, its claude not started", bool(queued) and not os.path.exists(os.path.join(fdir, "pid.1")))
         write_json(os.path.join(rdir, "repo.W-90.runner.json"), {**busy, "state": "waiting"})
         check("slots: a run waiting on the owner frees its slot; the queued one starts and finishes", p.wait(timeout=60) == 0 and any(t.startswith("slot free") for t in texts("W-37")))
-        os.remove(os.path.join(rdir, "repo.W-90.runner.json"))
+        # a seed run that claims the id while this /plan waits in the queue: the run checks again on its slot and ends,
+        # starting no claude (podcast W-037, 2026-11-25: the launch check had passed before the seed named the id)
+        write_json(os.path.join(rdir, "repo.W-90.runner.json"), busy)
+        scenario([{"turns": [[{"final": "RUNNER: DONE"}]]}])
+        npid = len(glob.glob(os.path.join(fdir, "pid.*")))
+        p = start("W-38", "--command", "plan")
+        queued = until(lambda: state_of("W-38").get("state") == "queued", 20)
+        write_json(os.path.join(rdir, "repo.seed-late.runner.json"), {"command": "plan", "state": "waiting", "pid": os.getpid()})   # waiting on the owner: holds no slot, still a live claim
+        append_line(os.path.join(rdir, "repo.seed-late.jsonl"), {"kind": "stage", "text": "Dossier id W-38 minted locally"})
+        write_json(os.path.join(rdir, "repo.W-90.runner.json"), {**busy, "state": "waiting"})
+        rc38 = p.wait(timeout=60)
+        check("slots: a /plan queued before a seed run claimed its id checks again on its slot and ends without a session",
+              bool(queued) and rc38 == 0 and state_of("W-38").get("state") == "done" and len(glob.glob(os.path.join(fdir, "pid.*"))) == npid
+              and any("not started" in t and "seed-late" in t for t in texts("W-38")))
+        for n in ("repo.seed-late.runner.json", "repo.seed-late.jsonl", "repo.W-90.runner.json"):
+            os.remove(os.path.join(rdir, n))
         order = sorted([(queue_order({"queued_since": "2026-11-09T10:00:00Z"}), "old"),
                         (queue_order({"queued_since": "2026-11-09T11:00:00Z", "queued_first": True}), "answered"),
                         (queue_order({"queued_since": "2026-11-09T10:30:00Z", "queued_first": True}), "answered-earlier")])

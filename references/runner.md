@@ -413,6 +413,13 @@ the recorded checkpoints.
   the kept brief without `--seed`. No `/work-on` is requeued when it ends:
   the dossier it wrote goes the usual way. The dashboard's Running now lists
   it as "Planning: <the brief's first line>".
+  While it runs, the ids it claimed are its own (`scripts/planning_runs.py`,
+  ported in `shared/questions/planning.ts`): a stage event naming the id as
+  claimed or minted, the id two stage events open with, its questions, and an
+  empty `<ID>-<slug>.md` created after it started, matched by its seed slug
+  (or the only live planning run). No second `/plan` or `/work-on` of such an
+  id starts: the launch refuses it, and a run that queued before the claim
+  checks again once it has a slot and ends done, "not started", with no session.
 - **The product summary:** after the deferred report, one more short
   process runs `/product-summary <ID>` (`commands/product-summary.md`) on
   `ASD_RUNNER_SUMMARY_MODEL` (default `sonnet`) and stores the page at
