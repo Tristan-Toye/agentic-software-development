@@ -815,6 +815,10 @@ queue gave up while that run was still waiting or asking, e.g. W-197; also cappe
 twice per head). "A resolve-merge run of W-161 is still live" is a wait, never a human
 failure. One timeline line says so. A cancelled merge, and a failure that needs a human
 (a conflict, red checks, spent resolve-merge attempts), stay the owner's to retry.
+A finished `/fix-deferred` that leaves deferred items open never pauses the cycle (the owner's ruling, 2026-11-25:
+auto work runs autonomously). Every open item, whether one the run was launched with or one its own review added, gets a
+follow-up `/fix-deferred`, at most two per member; after that the member is finished and the next cycle adopts the
+dossier. The `accept` pause below remains only for pauses raised before this rule.
 Accepting a pause ("Accept the open items", or `--resume accept`) rules every open
 deferred item leave-open (`<repo>.<ID>.deferred-owner.json`, as the dashboard's Leave
 open does), so the eager-merge hold lifts and the dossier joins the queue (W-183).
