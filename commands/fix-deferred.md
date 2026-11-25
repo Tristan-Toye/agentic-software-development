@@ -55,7 +55,7 @@ dossier file it names (`.discovery/dossiers/<ID>-*.md` in `<WT>`), `<S>` is
 | Set an item's state (only when no script above does it) | `python3 <S>/build_records.py deferred set <ID> D-n --state fixing\|fixed\|dossier\|wontfix [--note <sha>] --root <R> --log <DOSSIER>` |
 | Check a change-request document | `python3 <S>/check_crs.py <CRS file>` (drop a demoted one: `--drop CR-2 --out <file>`) |
 | Merge the fix packages (Step 4) | `python3 <S>/merge_packages.py --dossier <ID> --worktree <WT> --wave-args <WT>/.agent-staging/payloads/fix-wave.json` |
-| Add a review finding the run will not fix to the deferred list | `python3 <S>/build_records.py deferred add <ID> --root <R> --log <DOSSIER> --title '<claim>' --kind <kind> --loc <path:line> --evidence '<text>' --fix '<text>'` |
+| Record a review finding this run fixes (Step 5) | `python3 <S>/build_records.py deferred add <ID> --root <R> --log <DOSSIER> --title '<claim>' --kind <kind> --loc <path:line> --evidence '<text>' --fix '<text>'` |
 | Run the proving tests and the touched packages, once | `python3 <S>/run_tests.py --log <WT>/.agent-staging/fix-tests.log --cwd <WT> [--vm <name> --workdir <WT> --env-script <file>] -- <one command naming every proving test and package>`; a run over 10 minutes: add `--detach`, then `python3 <S>/run_tests.py --wait <WT>/.agent-staging/fix-tests.log` |
 | Run the gates | `python3 <S>/run_gates.py <gates file> --root <WT> [--only a,b] [--env-script <file>] [--build-log <DOSSIER>]` (gates file: the dossier's `GATES:` line, else `.discovery/analysis/gates-<ID>.txt`) |
 | Revert a fix that did not hold | `python3 <S>/safe_revert.py --repo <WT> <path> [<path> …]` (uncommitted), or `git -C <WT> revert --no-edit <sha>` (committed) |
@@ -267,21 +267,37 @@ this branch's diff (`<fork>..HEAD` of `<WT>`). Compose each lens's payload with
 (`pluginRoot` is an arg of the `phase4-wave` items only: `phase7-review` takes
 none, and never a pasted payload.) The workflow keeps each verbatim document in
 `reportDir` and returns one structured object per lens: read those, not the
-documents. A blocking change request goes back through Step 4 once (one
-package, one wave, one merge, and only the affected tests plus `run_gates.py
---affected-since` after it, never the full batch again). A change request that
-is **not blocking, or still open after that**, and that this run will not fix
-(style and architecture findings above all) becomes an item of the deferred
-list instead of being carried or hidden:
+documents.
 
-```bash
-python3 ${PLUGIN_ROOT}/scripts/build_records.py deferred add <ID> --root <R> --log <DOSSIER> \
-  --title '<the CR claim>' --kind <style|architecture> --loc '<path:line>' \
-  --evidence '<the CR evidence>' --fix '<its Required line>' \
-  --boundary '<contract boundary>' --blast-radius '<blast radius>' --source 'fix-deferred review'
-```
+Every change request is fixed in this run and lands in this stacked pull
+request: a review finding never becomes an open deferred item that holds the
+merge and starts another run (the owner's ruling). For each change request of
+the round:
 
-and the pull request body says how many went there.
+1. Record it as an item of the deferred list, so the record and the pull
+   request body account for it, and mark it `fixing` at once:
+
+   ```bash
+   python3 ${PLUGIN_ROOT}/scripts/build_records.py deferred add <ID> --root <R> --log <DOSSIER> \
+     --title '<the CR claim>' --kind <style|architecture> --loc '<path:line>' \
+     --evidence '<the CR evidence>' --fix '<its Required line>' \
+     --boundary '<contract boundary>' --blast-radius '<blast radius>' --source 'fix-deferred review'
+   python3 ${PLUGIN_ROOT}/scripts/build_records.py deferred set <ID> D-n --state fixing --root <R> --log <DOSSIER>
+   ```
+
+2. Triage it the way Step 2 triages an item: a direct fix (the usual case for
+   style and architecture findings), or, only when it truly needs one, an
+   owner question or its own dossier (`--to-dossier` in Step 6). Never "later".
+3. All direct fixes of the round go back through Step 4 together: one wave,
+   one merge, test first, and only the affected tests plus `run_gates.py
+   --affected-since` after it, never the full batch again.
+
+Then run the next review round (`"round": 2`, …) on the branch's whole diff. Repeat until a
+round returns no change request. A change request that a later round raises
+again after its fix was merged did not converge: ask the owner about that one
+(Step 2's question form), and never loop on it. Each item fixed here goes to
+Step 6 like any direct item (`--fixed D-n=<sha>`), and the pull request body
+counts the review rounds and the items they added.
 
 ## Step 6 — The pull request
 
