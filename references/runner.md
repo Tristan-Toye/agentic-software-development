@@ -870,7 +870,8 @@ predates it, and the repo's env script then refuses every test. Before a VM run 
 setting NAMES the tree's catalog lists are compared with the NAMES in the env file the env script reads. No value
 is read into output. On drift:
 - re-run `stack_up` (the repo's `up.sh`) from the persistent checkout, the only checkout allowed to own the shared
-  stack (a worktree's `up.sh` refuses), when its own catalog already has the missing names and no run holds the
+  stack (a worktree's `up.sh` refuses): the main checkout, or for a run in the /stub stack checkout
+  (`scripts/stack_checkout.py`, `<main>-stack`, a clone at the stub head) that clone itself, when its own catalog already has the missing names and no run holds the
   stack lease (`lease_probe`); under the repair lock, at most 4 times per hour per VM;
 - otherwise (the persistent checkout is on an older branch, the lease is held, or `up.sh` did not close the drift)
   the run goes ahead without the env script and with the repo's `skip_env` switches, and its digest heads with

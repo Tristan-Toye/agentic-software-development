@@ -139,7 +139,7 @@ timeline, write it in the record, and go on. Never ask the owner for these:
 - **Stale stack settings** (`.runtime.env` lacks names the catalog has, a
   test or `test-env.sh` says to re-run `up.sh`): `run_tests.py --vm` syncs it
   itself (`STACK-ENV:` in its output). When it reports `skipped`, run the
-  repository's `up.sh` from the persistent checkout through the repository's
+  repository's `up.sh` from the stack checkout (Step 6) through the repository's
   host wrapper (config-harness: `bash deploy/host/host.sh exec --
   deploy/scripts/up.sh --build test`, which forwards the sops key into the
   VM; plain `limactl shell` cannot decrypt), then check every service is
@@ -315,16 +315,33 @@ suite failures do.
 
 The integrated verdict, once per head, in the VM, on the guarded path:
 
-1. **The persistent checkout**, the one the repository's own rules name for
-   stack work, synced to the stub head: fetch, checkout, and a clean tree —
-   `local_stack_status.py` refuses a dirty one, and so do you.
-2. **The fake-LLM image must match this candidate** — the repository's
-   `AGENTS.md` names the check (`docker inspect compose-fake-llm-1` shows
-   which checkout built it). Rebuild it from this checkout when it names
-   another.
+1. **The stack checkout**, the persistent checkout for stack work at the
+   stub head: `python3 ${PLUGIN_ROOT}/scripts/stack_checkout.py sync --root
+   <main checkout> --ref origin/<stub branch>`. It prints `STACK-CHECKOUT:
+   <path> <sha>`; that path is `<checkout>` for every step below and for every
+   re-run. It is `<main checkout>-stack`, a local clone (its own `.git`, so a
+   repository whose `up.sh` refuses worktrees accepts it) that outlives the
+   run, always detached and never removed, so the shared stack may be bound
+   to it. Its first run has no env file of its own: `run_tests.py` then brings
+   the stack up from it (`STACK-ENV: synced`), which is expected once.
+   **Never check out, detach or switch the main checkout**: it
+   stays on development, read-only (the main-checkout lock refuses it, and
+   the dashboard reads its dossiers). Exit 2 names a dirty stack checkout or
+   an unknown ref: nothing was discarded. Copy your own leftovers under
+   `~/.agentic/` before you clean them; anything else is an `ATTENTION:` line.
+2. **The stack and the fake-LLM image must match this candidate** — the
+   repository's `AGENTS.md` names the check (`docker inspect
+   compose-fake-llm-1` shows which checkout built it). Rebuild it from the
+   stack checkout when it names another, and bring bind-mounted services up
+   from the stack checkout (the repository's host wrapper, as "The
+   environment is yours to repair" says) when the stub changed their compose
+   files or the stack was last brought up from elsewhere. `run_tests.py`
+   itself brings the stack up when its settings lag the stack checkout and
+   rebuilds a stale fixture (`STACK-ENV:` lines); a compose-file change is
+   yours to bring up.
 3. **The run**, through the one door:
    `python3 ${PLUGIN_ROOT}/scripts/run_tests.py --log <file> --vm nightwatch
-   --workdir <VM workdir> -- scripts/run_all_tests.sh --stack` — no
+   --workdir <the stack checkout> -- scripts/run_all_tests.sh --stack` — no
    `--env-script`: the runner builds first with no lease and sources the
    environment itself for each run line, so a pre-sourced file would hold
    the lease before the build. Read the summed counts and each failure

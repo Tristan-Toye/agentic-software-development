@@ -3,7 +3,7 @@ import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { dirtyMains, type Git } from "../questions/mainlock.ts"
-import { dossiersIn, notesFor, overlayNotes, readDossier } from "../questions/runs.ts"
+import { dossiersIn, isStackCheckout, notesFor, overlayNotes, readDossier } from "../questions/runs.ts"
 
 const fails: string[] = []
 const check = (name: string, ok: boolean, extra = "") => { console.log((ok ? "PASS " : "FAIL ") + "mainlock: " + name); if (!ok) fails.push(name + (extra ? " — " + extra : "")) }
@@ -39,3 +39,11 @@ check("dirty main: a committed-mode checkout with tracked changes is listed with
   got.length === 1 && got[0].repo === "a" && got[0].files.join(",") === ".discovery/dossiers/W-1-x.md,src/x.rs", JSON.stringify(got))
 
 if (fails.length) { console.log(fails.join("\n")); process.exit(1) }
+
+check("runs: the stack checkout <main>-stack (a clone beside its main checkout) is never a dossier root; other siblings are", (() => {
+  const have = new Set(["/r/config-harness/.git", "/r/config-harness-stack/.git", "/r/config-harness-W-1/.git", "/r/lone-stack/.git"])
+  const ex = (p: string) => have.has(p)
+  return isStackCheckout("/r/config-harness-stack", ex) && isStackCheckout("/r/config-harness-stack/", ex)
+    && !isStackCheckout("/r/config-harness-W-1", ex) && !isStackCheckout("/r/config-harness", ex)
+    && !isStackCheckout("/r/lone-stack", ex)
+})())
