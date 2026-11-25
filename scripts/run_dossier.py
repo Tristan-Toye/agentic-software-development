@@ -939,8 +939,9 @@ def model_ok(expected: str, actual: str) -> bool:
 # while queued runs idled). Trade-off, accepted by the owner: when the wait ends the run goes straight back to
 # `running` WITHOUT queueing, so the live count may briefly exceed the cap until another run finishes or waits.
 
-# a stage the agent ended with "duplicate run: <id> is already owned by the live run <key> ...; this run changed nothing"
-DUPLICATE_RUN_RE = re.compile(r"duplicate run\b[^\n]*\bchanged nothing", re.I)
+# a stage the agent ended with "duplicate run: <id> is already owned by the live run <key> ...; this run changed nothing",
+# or in its own words: "another live /plan session is already planning W-035 ...; this duplicate run stopped before any write"
+DUPLICATE_RUN_RE = re.compile(r"duplicate run\b[^\n]*\bchanged nothing|another live /?\w+ (?:session|run) is already (?:planning|building|fixing)\b[^\n]*\bduplicate run\b", re.I)
 TESTING_HUNG_MIN = 240      # a known test/CI wait is hung only after this many minutes (ASD_TESTING_HUNG_MIN), not the plain stall limit
 TESTING_QUIET_SECS = 300    # an in-flight Bash call with no output for longer than this counts as a long wait
 # the long waits we know by name (any flags, `--wait` included): tests, gates, a hand-written poll on a detached run's
@@ -4831,6 +4832,10 @@ def selftest() -> int:
         check("duplicate run: ends failed, exit 1, with no owner question and the reason logged",
               p.wait(timeout=60) == 1 and state_of("W-88").get("state") == "failed" and not os.path.exists(qfile("repo.W-88.Q1"))
               and any("duplicate run" in t for t in texts("W-88")))
+        check("duplicate run: the agent's own wording (W-035) matches too; a plain failure does not",
+              bool(DUPLICATE_RUN_RE.match("another live /plan session is already planning W-035 (it has finished Phase 3); this duplicate run stopped before any write to avoid overwriting it"))
+              and not DUPLICATE_RUN_RE.match("another live /plan session is already planning W-035, so I need the owner to pick one")
+              and not DUPLICATE_RUN_RE.match("the gates failed on W-035"))
 
         # ---- 2c. planning blocked on a PR: the runner waits for it to merge (no question), closed unmerged goes to the session ----
         gh_merge = os.path.join(tmp, "gh_merge.py")
