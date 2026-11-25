@@ -538,6 +538,10 @@ function vrBuild(host, key, data) {
   function fit() { if (!cur || !cur.layout) return; const r = svg.getBoundingClientRect(), W = cur.layout.width, H = cur.layout.height, bw = r.width || 600, bh = r.height || 400; let k = Math.max(0.1, Math.min(bw / (W + 40), bh / (H + 40), 1.6)); if (!st.fitAll) k = Math.max(k, readableK()); const ox = W * k + 40 > bw, oy = H * k + 40 > bh; vp = { k: k, x: ox ? 20 : (bw - W * k) / 2, y: oy || data.mapPath ? 20 : (bh - H * k) / 2 }; apply(); }
   function zoomAt(f, mx, my) { const k = Math.max(0.15, Math.min(4, vp.k * f)); vp.x = mx - (mx - vp.x) * (k / vp.k); vp.y = my - (my - vp.y) * (k / vp.k); vp.k = k; apply(); }
   function inspect(id) {
+    /* A repaint while the owner types: note the focus and cursor of the comment box first, so verdictBox puts them back. */
+    const ae = document.activeElement, adk = ae && insp.contains(ae) && ae.getAttribute && ae.getAttribute('data-vd-dk');
+    Object.keys(st.drafts || {}).forEach(k => { st.drafts[k].focus = false; });
+    if (adk) { const dd = (st.drafts = st.drafts || {})[adk] = st.drafts[adk] || { comment: ae.value }; dd.comment = ae.value; dd.focus = true; dd.s0 = ae.selectionStart; dd.s1 = ae.selectionEnd; }
     const it = items()[id]; insp.replaceChildren(); if (!it) return;
     vrDom('h3', '', it.label || (it.source + ' → ' + it.target), insp);
     const meta = vrDom('p', 'small', null, insp); const b = vrDom('span', 'vrbadge ' + it.status, VR_MARK[it.status] + ' ' + it.status, meta);
@@ -557,26 +561,32 @@ function vrBuild(host, key, data) {
   const lineFor = (view, id) => ((st.review && st.review.lines) || []).find(l => l.anchor.diagram === view && l.anchor.element === id);
   function verdictBox(id) {
     const old = lineFor(st.view, id), box = vrDom('div', 'vrvd', null, insp); box.setAttribute('data-vd', id);
-    let pick = old ? old.verdict : '';
+    /* The unsaved draft (pick, comment, blocking) of this element: the periodic reload repaints the inspector from review.json, so a comment being typed is kept here and put back, cursor included, until it is saved or cleared. */
+    const dk = st.view + '|' + id, drafts = st.drafts = st.drafts || {}, dr = drafts[dk];
+    const hadFocus = !!(dr && dr.focus);
+    let pick = dr && dr.pick !== undefined ? dr.pick : (old ? old.verdict : '');
+    const keep = () => { drafts[dk] = { pick: pick, comment: ta.value, blocking: bc.checked, s0: ta.selectionStart, s1: ta.selectionEnd }; };
     const state = vrDom('p', 'small', old ? (old.state === 'outdated' ? 'Outdated: this verdict was made on an earlier version of the diagram (' + old.verdict + '). Save it again to confirm.' : 'Your verdict: ' + old.verdict) : 'Not yet looked at.', box);
     const grp = vrDom('div', 'vrgrp', null, box), btns = {};
-    VD.forEach(v => { const b = vrDom('button', 'btn sm', v[1], grp); b.type = 'button'; b.setAttribute('data-vd-pick', v[0]); btns[v[0]] = b; b.setAttribute('aria-pressed', String(pick === v[0])); b.onclick = () => { pick = v[0]; Object.keys(btns).forEach(k => btns[k].setAttribute('aria-pressed', String(k === pick))); save.disabled = false; }; });
-    const ta = vrDom('textarea', '', null, box); ta.maxLength = 1000; ta.value = old ? old.comment : ''; ta.placeholder = 'Optional comment'; ta.setAttribute('aria-label', 'Comment on this element');
+    VD.forEach(v => { const b = vrDom('button', 'btn sm', v[1], grp); b.type = 'button'; b.setAttribute('data-vd-pick', v[0]); btns[v[0]] = b; b.setAttribute('aria-pressed', String(pick === v[0])); b.onclick = () => { pick = v[0]; Object.keys(btns).forEach(k => btns[k].setAttribute('aria-pressed', String(k === pick))); save.disabled = false; keep(); }; });
+    const ta = vrDom('textarea', '', null, box); ta.maxLength = 1000; ta.value = dr ? dr.comment : (old ? old.comment : ''); ta.placeholder = 'Optional comment'; ta.setAttribute('aria-label', 'Comment on this element');
     const fbA = 'el:' + st.view + ':' + id, fbItem = vrRepo + '/' + vrDossier;
     if (FB_ANCHOR.test(fbA)) {
       const vl = vrDom('label', 'fbview', null, box), vc = vrDom('input', '', null, vl); vc.type = 'checkbox'; vc.checked = fbIsViewed(fbSavedOf(), fbState(fbItem), fbA); vl.appendChild(document.createTextNode(' viewed'));
       vc.onchange = () => { fbSetViewed(fbState(fbItem), fbA, vc.checked); fbKeep(fbItem); };
     }
-    const bl = vrDom('label', 'fbblk', null, box), bc = vrDom('input', '', null, bl); bc.type = 'checkbox'; bc.checked = !!(old && old.blocking); bl.appendChild(document.createTextNode(' blocking')); bl.title = 'A blocking Question or Change holds the approval back; informing only tells the agent';
+    const bl = vrDom('label', 'fbblk', null, box), bc = vrDom('input', '', null, bl); bc.type = 'checkbox'; bc.checked = dr ? !!dr.blocking : !!(old && old.blocking); bl.appendChild(document.createTextNode(' blocking')); bl.title = 'A blocking Question or Change holds the approval back; informing only tells the agent';
     const row = vrDom('div', 'vrgrp', null, box), save = vrDom('button', 'btn primary sm', 'Save verdict', row), clr = vrDom('button', 'btn sm', 'Clear', row), msg = vrDom('span', 'small mut', '', row);
     save.type = clr.type = 'button'; save.disabled = !pick; clr.disabled = !old;
+    ta.addEventListener('input', keep); ta.addEventListener('select', keep); ta.addEventListener('keyup', keep); bc.addEventListener('change', keep); ta.setAttribute('data-vd-dk', dk);
+    if (hadFocus) { ta.focus(); try { ta.setSelectionRange(dr.s0, dr.s1); } catch (e) { /* no selection */ } }
     const go = async (verdict) => {
       save.disabled = clr.disabled = true; msg.textContent = 'Saving…';
       try {
         const r = await fetch('/api/visual-review/review', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ dossier: vrDossier, repo: vrRepo, diagram: st.view, element: id, verdict: verdict, comment: ta.value, blocking: bc.checked, graph_hash: (data.shownHashes || {})[st.view] }) });
         const j = await r.json().catch(() => ({}));
         if (!r.ok) { msg.textContent = j.error || ('HTTP ' + r.status); save.disabled = !pick; clr.disabled = !old; if (r.status === 409) vrLoad(vrRepo, vrDossier); return; }
-        st.review = j.review; paintAll(); if (j.followup) load(['questions']);
+        delete drafts[dk]; st.review = j.review; paintAll(); if (j.followup) load(['questions']);
       } catch (e) { msg.textContent = 'request failed'; save.disabled = !pick; clr.disabled = !old; }
     };
     save.onclick = () => go(pick); clr.onclick = () => go('unset');
