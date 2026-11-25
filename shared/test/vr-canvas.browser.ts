@@ -170,13 +170,37 @@ async function decisionExtras(page: any): Promise<string[]> {
   return probs
 }
 
+// A comment being typed in an element's verdict box survives the periodic reload (vrLoad repaints the inspector from
+// review.json): the text, the focus and the cursor come back, and nothing is saved by it.
+async function draftSurvivesReload(page: any, id: string): Promise<string[]> {
+  const probs: string[] = []
+  const ok = await page.evaluate(() => { const n = document.querySelector(".vr svg .vrn[data-id]") as SVGElement | null; if (!n) return false; n.dispatchEvent(new MouseEvent("click", { bubbles: true })); return true })
+  if (!ok) return ["draft check: no clickable element"]
+  await new Promise((r) => setTimeout(r, 300))
+  if (!(await page.$(".vr .vrvd textarea"))) return ["draft check: clicking an element opened no verdict box"]
+  const text = "a long unsaved comment ".repeat(12).trim()
+  await page.focus(".vr .vrvd textarea")
+  await page.keyboard.type(text, { delay: 0 })
+  await page.evaluate((d: string) => (window as any).vrLoad("repoV", d), id)
+  await new Promise((r) => setTimeout(r, 400))
+  const after = await page.evaluate(() => { const t = document.querySelector(".vr .vrvd textarea") as HTMLTextAreaElement | null; return t ? { v: t.value, f: document.activeElement === t, c: t.selectionStart } : null })
+  if (!after) probs.push("draft check: the verdict box is gone after a reload")
+  else {
+    if (after.v !== text) probs.push(`draft check: the unsaved comment was lost on reload (${after.v.length} of ${text.length} chars kept)`)
+    if (!after.f) probs.push("draft check: the comment box lost focus on reload")
+    if (after.c !== text.length) probs.push(`draft check: the cursor moved on reload (${after.c}, expected ${text.length})`)
+  }
+  return probs
+}
+
 type Result = { fix: Fix; width: number; tab: string; problems: string[]; labels: number; nodes: number }
 async function check(base: string, f: Fix, width: number): Promise<Result[]> {
   const page = await browser.newPage()
   const errors: string[] = []
   page.on("console", (m: any) => { if (m.type() === "error" && !/Failed to load resource/.test(m.text())) errors.push("console error: " + m.text()) })
-  // The browser's own "Failed to load resource" line names no URL; the response event does. A missing /favicon.ico is not the canvas.
-  page.on("response", (r: any) => { if (r.status() >= 400 && !/\/favicon\.ico$/.test(r.url())) errors.push(`console error: HTTP ${r.status()} for ${r.url()}`) })
+  // The browser's own "Failed to load resource" line names no URL; the response event does. A missing /favicon.ico is not the canvas,
+  // nor is the 404 of /api/review-packet for a fixture with no packet (the page shows no packet pane then, by design).
+  page.on("response", (r: any) => { if (r.status() >= 400 && !/\/favicon\.ico$/.test(r.url()) && !(r.status() === 404 && /\/api\/review-packet\?/.test(r.url()))) errors.push(`console error: HTTP ${r.status()} for ${r.url()}`) })
   page.on("pageerror", (e: any) => errors.push("page error: " + (e?.message ?? e)))
   await page.setViewport({ width, height: 900, deviceScaleFactor: 1 })
   await page.goto(`${base}/repo/repoV/${f.id}`, { waitUntil: "load", timeout: 30_000 })
@@ -201,6 +225,7 @@ async function check(base: string, f: Fix, width: number): Promise<Result[]> {
       out.push({ fix: f, width, tab: `${phase} ${tab}`.trim(), ...m })
     }
   }
+  if (f.expect === "pass" && width === WIDTHS[WIDTHS.length - 1]) out[0].problems.push(...(await draftSurvivesReload(page, f.id)))
   if (errors.length) out[0].problems.push(...errors)
   await page.close()
   return out
