@@ -326,6 +326,16 @@ repo's declared recovery, inherited from the dossier branch (sealed backup lacki
 name the dossier made required), is not Step 4 work and not an owner question:
 `ci_recover.py recover` reseals on the dossier branch and pushes; wait again.
 
+A red test that the dossier's own PR fails too, and that no fix in this stack
+caused, is also inherited and also not an owner question. Typically a stub merge
+outdated a pin, such as a count or a list. The merge queue waits for green checks
+on **every** PR of the stack, not only on its top, so a fix on the deferred
+branch alone leaves the stack unmergeable. When the fix is mechanical (it
+changes no behaviour and no contract), commit it on the dossier branch in the
+dossier's worktree with hooks on, push, and wait for CI on both PRs. Log
+`DEFERRED-INHERITED: <test> — fixed on <dossier branch> <sha> (<cause>)`. Ask
+the owner only when the fix would change behaviour or a contract.
+
 ## Step 7 — Plan the items routed to their own dossier
 
 Call `phase_checkpoint` for `Fix-deferred — Step 7 — Plan the routed items`.
