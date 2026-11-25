@@ -90,6 +90,28 @@ def scanned_max(repo: str, ns: str, kind: str) -> int:
             m = pat.match(path.rsplit("/", 1)[-1])
             if m:
                 best = max(best, int(m.group(1)))
+    return max(best, local_max(repo, kind))
+
+
+def local_max(repo: str, kind: str) -> int:
+    """The highest number of this kind on disk in this checkout and in the repository's main checkout. A local-mode repo
+    keeps its dossiers unpushed, so the remote scan alone handed out W-014 while W-014..W-036 sat in the main checkout
+    (podcast, 2026-11-25)."""
+    d, pat, _ = KINDS[kind]
+    roots = {os.path.abspath(repo)}
+    r = git(repo, "rev-parse", "--path-format=absolute", "--git-common-dir", check=False)
+    if r.returncode == 0 and r.stdout.strip():
+        roots.add(os.path.dirname(r.stdout.strip().rstrip("/")))
+    best = 0
+    for root in roots:
+        try:
+            names = os.listdir(os.path.join(root, d))
+        except OSError:
+            continue
+        for name in names:
+            m = pat.match(name)
+            if m:
+                best = max(best, int(m.group(1)))
     return best
 
 
@@ -191,6 +213,14 @@ def selftest() -> int:
                              capture_output=True, text=True).stdout
         check("ledger has one line per claim", len(txt.splitlines()) == 14, txt)
         check("ledger line shape", re.match(r"^W-010\tplan/one\t\d{4}-\d\d-\d\dT", txt) is not None, txt[:80])
+        # local mode: dossiers that exist only on disk (never pushed) are taken too, in this checkout and in the main
+        # checkout of a worktree (podcast 2026-11-25: the remote scan handed out W-014 while W-014..W-036 sat on disk)
+        os.makedirs(os.path.join(clones[2], ".discovery/dossiers"), exist_ok=True)
+        open(os.path.join(clones[2], ".discovery/dossiers/W-040-local.md"), "w").write("x\n")
+        check("an unpushed local dossier is taken", claim(clones[2], "origin", "W", "x", peek=True) == "W-041")
+        wt = os.path.join(t, "wt")
+        subprocess.run(["git", "-C", clones[2], "worktree", "add", "-q", "-b", "wtb", wt], check=True)
+        check("a worktree sees its main checkout's unpushed dossier", claim(wt, "origin", "W", "x", peek=True) == "W-041")
         head1 = subprocess.run(["git", "-C", clones[0], "rev-parse", "HEAD"], capture_output=True, text=True).stdout
         st = subprocess.run(["git", "-C", clones[0], "status", "--porcelain"], capture_output=True, text=True).stdout
         check("HEAD and working tree untouched", head0 == head1 and st == "", st)

@@ -715,6 +715,21 @@ check("timeline: a step line and a counted suite result are on the timeline; a b
     const dup = controlsFor({ status: "planned", blockedBy: [], runner: { state: "running", command: "plan" } as any, planning: pl["W-218"] }, st({}))
     check("planning: claimed by a live seed run AND its own duplicate runner active: Stop shown, Start and Resume hidden", dup.stop.show && !dup.start.show && !dup.resume.show)
     check("planning: the seed run finished or dead, Start (plan) is back", controlsFor({ status: "planned", blockedBy: [], runner: null, planning: null }, st({})).start.show && !planningRuns("r", fx)["W-77"] && !planningRuns("r", fx)["W-78"])
+    // An empty dossier file a seed created is its claim before the run names the id (podcast W-037/W-038, 2026-11-25).
+    const ptmp = mkdtempSync(join(tmpdir(), "asd-ph-")), pruns = join(ptmp, "runs"), proot = join(ptmp, "repo"), pdd = join(proot, ".discovery", "dossiers")
+    mkdirSync(pruns, { recursive: true }); mkdirSync(pdd, { recursive: true })
+    const seedRec = (slug: string, state = "running") => writeFileSync(join(pruns, `q.seed-${slug}.runner.json`), JSON.stringify({ command: "plan", state, root: proot, started: "2020-01-01T00:00:00Z" }))
+    for (const slug of ["alb-edge-hardening", "audio-studio-frontend", "cognito-oidc-provider"]) seedRec(slug)
+    for (const [n, b] of [["W-037-cognito-oidc-provider.md", ""], ["W-038-audio-studio-frontend-live-api.md", ""], ["W-039-unrelated-thing.md", ""], ["W-036-done.md", "---\nstatus: ready\n---\n"]]) writeFileSync(join(pdd, n), b)
+    writeFileSync(join(pruns, "q.seed-alb-edge-hardening.jsonl"), JSON.stringify({ kind: "stage", text: "Dossier id W-040 minted locally (claim_id gave W-014)" }) + "\n")
+    const ph = planningRuns("q", pruns)
+    check("planning: an empty dossier file goes to the seed whose slug it carries, none with several seeds and no slug; 'minted' claims (same cases as planning_runs.py)",
+      JSON.stringify(Object.fromEntries(Object.entries(ph).map(([k, v]) => [k, v.key]).sort())) === JSON.stringify({ "W-037": "q.seed-cognito-oidc-provider", "W-038": "q.seed-audio-studio-frontend", "W-040": "q.seed-alb-edge-hardening" }), JSON.stringify(ph))
+    check("planning: the async read gives the same placeholder claims", JSON.stringify(await planningRunsAsync("q", pruns)) === JSON.stringify(ph))
+    seedRec("alb-edge-hardening", "done"); seedRec("audio-studio-frontend", "done")
+    check("planning: one live planning run owns an empty file it could have made; an older file is no claim",
+      planningRuns("q", pruns)["W-039"]?.key === "q.seed-cognito-oidc-provider" && (utimesSync(join(pdd, "W-039-unrelated-thing.md"), 1e9, 1e9), !planningRuns("q", pruns)["W-039"]))
+    rmSync(ptmp, { recursive: true, force: true })
   }
   check("controls: blocked_by ids are read from a list value", JSON.stringify(blockedByOf("[W-1, W-22]")) === '["W-1","W-22"]' && blockedByOf("[]").length === 0 && blockedByOf(undefined).length === 0)
   check("controls: start needs ready and every blocker done", controlsFor(run("ready", []), st({})).start.ok && controlsFor(run("ready", ["W-1"]), st({ "W-1": "done" })).start.ok && !controlsFor(run("ready", ["W-1"]), st({ "W-1": "building" })).start.ok && controlsFor(run("ready", ["W-1", "W-2"]), st({ "W-1": "done" })).start.reason === "blocked by W-2" && !controlsFor(run("building", []), st({})).start.show)
