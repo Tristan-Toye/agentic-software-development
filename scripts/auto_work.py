@@ -78,6 +78,13 @@ atomically: `{cycle, phase, step, started, stub, paused, members: [{id, stage, s
 Facts (from the dashboard): `{"repos": {"<repo>": {"root", "runs": [{id, status, blockedBy, runner, deferred}],
 "stubs": [{branch, state, canIntegrate}]}}}`.
 
+# A parked member whose blockers nothing in the cycle builds
+
+A member's /work-on that parked (its blockers are not done) is live, and the cycle waits for it. But when every open
+blocker is neither a member still at work nor a dossier with a live run of its own, nothing in this cycle will ever
+finish it: the member is marked finished, "left to the next cycle: parked on <ids>", and the cycle goes on to its docs
+and integrate step. Its run stays parked and starts by itself once the blockers are done; a later cycle adopts it.
+
 # A /work-on that ends done with the dossier not at `pr` or `done`
 
 That should not happen. After LAG_TICKS ticks (a status write may land late) the run's own agent is asked once per
@@ -606,7 +613,18 @@ def built_already(m: dict, r: dict) -> bool:
     return r.get("command") == "work-on" and r.get("state") == "done" and not (L and L["command"] == "work-on")
 
 
-def step_member(st: dict, m: dict, run: dict | None) -> None:
+def stranded_blockers(st: dict, run: dict, all_runs: dict) -> list[str]:
+    """The open blockers of a parked member that nothing in this cycle will finish: not a member still at work, no live
+    run of their own. All of them stranded means the member can never start this cycle (config-harness W-198,
+    2026-11-25: parked on W-207 since the 11-19 renumbering, which no cycle had picked up, and the integrate waited a
+    week). [] when any blocker is still being worked on, or none is open."""
+    working = {x["id"] for x in st["members"] if x["stage"] != "finished"}
+    open_b = [b for b in run.get("blockedBy") or [] if (all_runs.get(b) or {}).get("status") not in ("pr", "done")]
+    stranded = [b for b in open_b if b not in working and ((all_runs.get(b) or {}).get("runner") or {}).get("state") not in LIVE]
+    return stranded if open_b and len(stranded) == len(open_b) else []
+
+
+def step_member(st: dict, m: dict, run: dict | None, all_runs: dict | None = None) -> None:
     if m["stage"] == "finished":
         return
     if run is None:
@@ -614,6 +632,10 @@ def step_member(st: dict, m: dict, run: dict | None) -> None:
     status, r, L = run.get("status", ""), run.get("runner") or {}, m.get("launch")
     if status == "dropped":
         m.update(stage="finished", state="finished", error="dropped"); return
+    if r.get("state") == "parked" and all_runs is not None and (lost := stranded_blockers(st, run, all_runs)):
+        # The parked run stays parked (it unparks by itself once its blockers are done); the cycle no longer waits on it.
+        m.update(stage="finished", state=f"left to the next cycle: parked on {', '.join(lost)}, which this cycle does not build", error="")
+        return
     if r.get("state") in LIVE:   # waiting = an owner question: never answered, skipped or timed out here
         m["stage"] = STAGE_OF.get(status, m["stage"])
         m["state"] = {"queued": "queued for a slot", "waiting": "waiting for the owner", "paused": "paused (usage limit)",
@@ -740,7 +762,7 @@ def step_cycle(st: dict, facts: dict) -> bool:
         return False
     if step == "work":
         for m in st["members"]:
-            step_member(st, m, runs.get(m["id"]))
+            step_member(st, m, runs.get(m["id"]), runs)
             if st["paused"]:
                 return False
         if all(m["stage"] == "finished" for m in st["members"]):
@@ -1638,6 +1660,15 @@ def selftest() -> int:
         stuck("XP"); facts_runs[:] = [run_("XP", "ready", runner=runner("parked", "work-on", pid=9, started="s1"))]; tk(); tk(); tk()
         check("a parked /work-on (waiting for blockers in the same cycle) is live: never asked, the cycle does not pause",
               not asks("XP") and not st()["paused"] and members()["XP"]["state"] == "waiting for its blockers", (asks("XP"), st().get("paused"), members()["XP"]))
+        stuck("XP"); facts_runs[:] = [run_("XP", "ready", blocked=["XB"], runner=runner("parked", "work-on", pid=9, started="s1")), run_("XB", "ready")]; tk()
+        check("a parked /work-on whose only open blocker is outside the cycle, with no run, is left to the next cycle: the integrate no longer waits",
+              members()["XP"]["stage"] == "finished" and "left to the next cycle" in members()["XP"]["state"] and "XB" in members()["XP"]["state"] and not st()["paused"], members()["XP"])
+        stuck("XP"); facts_runs[:] = [run_("XP", "ready", blocked=["XB"], runner=runner("parked", "work-on", pid=9, started="s1")), run_("XB", "building", runner=runner("running", "work-on"))]; tk()
+        check("a parked /work-on whose blocker has a live run of its own still waits",
+              members()["XP"]["stage"] != "finished" and members()["XP"]["state"] == "waiting for its blockers", members()["XP"])
+        stuck("XP"); facts_runs[:] = [run_("XP", "ready", blocked=["XB"], runner=runner("parked", "work-on", pid=9, started="s1")), run_("XB", "done")]; tk()
+        check("a parked /work-on whose blockers are all done waits for its unpark",
+              members()["XP"]["stage"] != "finished" and members()["XP"]["state"] == "waiting for its blockers", members()["XP"])
         stuck("X1"); tk(); n_ask = len(asks("X1"))
         check("a /work-on that ended with the dossier still ready waits a tick before the agent is asked", n_ask == 0 and not st()["paused"])
         tk()
