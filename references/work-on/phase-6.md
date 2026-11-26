@@ -88,19 +88,18 @@ and neither asks the owner:
 
 Detail: `ref_section` with `phase-6-conditional` and the heading "Under local and stub, and the coverage check on every verdict". (read it for the runner you are under.)
 
-**Every head that leaves this machine passes the `GATES:` list first**
-(Phase 2, `run_gates.py`). The first push of the branch runs the full list
-(no flag); each later arbitration fix runs `--affected-since <sha of the head
-the full list last passed on>`, which skips the gates no changed path touches
-(printed `skipped: no changed paths`) and reuses a gate already green on the
-same inputs. Call `run_gates.py <gates file> --root X --build-log <live dossier>` every time (the script appends its own
-`GATES: run <green|red> on <sha> — <counts>` line to `## Build log`; do not write that line by hand): a green run on the same gates file and the same
-tree — a fix-mode implementer's, on the commit you are about to push —
-left a receipt, and the call prints `REUSED` and runs nothing. Any edit,
-commit, merge or new file outside `.discovery/dossiers/` changes the tree,
-and the list runs again. `--fresh` forces a run; never pass it to escape a
-receipt you believe in. A green
-default-feature compile is not the list.
+**The PR's CI is the full verification; no full local gate run.** After each
+wave and each arbitration fix round run the ROUND CHECK (Phase 2, `run_gates.py
+<gates file> --root X --round --affected-since <sha of the last round's head>
+--round-tests <new or affected test gates> --build-log <live dossier>`; the script
+appends its own `GATES: run <green|red> on <sha> — <counts>` line to `## Build
+log`, do not write that line by hand): the new or affected tests (with the
+feature-flag variants where needed), compile, lint and format, the `[kind:
+check]` gates, the feature-axis compiles, and the self-tests or script gates
+whose own files changed. Release the slot while it runs. The first time all new
+tests are green, run the full service-free test suite once, then the mutation
+check, then review. Later rounds run the round check plus the full tests of the
+packages that round changed. The push and the final head run nothing extra.
 
 Detail: `ref_section` with `phase-6-conditional` and the heading "First, check whether the target branch has moved, and sync now". (before you arbitrate anything.)
 

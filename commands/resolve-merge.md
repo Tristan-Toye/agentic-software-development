@@ -118,7 +118,8 @@ Do not patch around it.
 
 ## Step 3 — Prove it
 
-Run the gates on the touched paths (`run_gates.py`) and the tests of the
+Run the round check on the touched paths (`run_gates.py --round
+--affected-since <head before the merge>`; never the full list, the PR's CI runs it) and the tests of the
 packages the conflicts touched, plus the dossier's own new tests
 (`run_tests.py`; `--vm` where the repository needs it). After merging the base
 in, also run the tests of every package that both the base and this stack

@@ -79,8 +79,12 @@ Detail: `ref_section` with `phase-7-conditional` and the heading "Resolve RULES 
   **one-line-per-CR ledger**, appended to `## Build log` through the round's checkpoint `log` — one line per change request, in this form:
 
   ```
-  - r1 <lens>: CR-<lens>-<n> <one-line requirement> — <path:line> — accepted | demoted (<missing evidence>)
+  - r1 <lens>: CR-<lens>-<n> <one-line requirement> — <path:line> [cat: <slug>] — accepted | demoted (<missing evidence>)
   ```
+
+  `<slug>` is a short lower-case kebab-case name for the kind of finding (the CR's `Rule`,
+  reduced: `bare-except`, `unchecked-index`); reuse a slug already in this repo's ledgers
+  (`grep -rhoE '\[cat: [^]]+' .discovery/dossiers`). Phase 8c counts it.
 
   Never paste a reviewer document into the dossier — a document has its own
   headings, and the dossier body has six fixed sections. The full document is
@@ -107,13 +111,13 @@ Detail: `ref_section` with `phase-7-conditional` and the heading "Spawn the impl
 Detail: `ref_section` with `phase-7-conditional` and the heading "One fix spawn per package per round, with the place to start". (every fix round: one spawn per package, the CR excerpts.)
 Detail: `ref_section` with `phase-7-conditional` and the heading "The style lens may start early, beside the Phase 6 suite run". (the cheap lens runs with Phase 6.)
 
-- **Run the `GATES:` list (Phase 2) on the fixed head before you push**,
-  including gates no local aggregator covers: `run_gates.py --build-log <live dossier> --affected-since
-  <sha of the head the full list last passed on>` for a review fix round (only
-  the gates its changed paths touch run, the rest print `skipped`, a path no
-  gate claims runs them all), and the FULL list (no flag) on the final head
-  before the PR. A doc link or a feature-gated compile is what a small fix
-  breaks; the final full run is what catches what a path map missed.
+- **Run the ROUND CHECK (Phase 2) on the fixed head before you push**:
+  `run_gates.py --build-log <live dossier> --round --affected-since <sha of the
+  last round's head>` (compile, lint, format, `[kind: check]` gates, the gates the
+  changed paths touch, and the tests the round changed), then the full tests of
+  the packages that round changed. No full gates run on the final head: the PR's
+  CI is the full verification, and a red CI job is compared with the base's CI
+  only when it is doubtful the change caused it, else that one gate runs locally.
 - Get the runner's verdict on the fixed head (Phase 6: under `ci`, push the
   fix commit and read CI's run; under `local`, run it). Any test that turns
   red means the fix was not behaviour-preserving: return it to the

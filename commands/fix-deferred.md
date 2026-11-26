@@ -57,7 +57,7 @@ dossier file it names (`.discovery/dossiers/<ID>-*.md` in `<WT>`), `<S>` is
 | Merge the fix packages (Step 4) | `python3 <S>/merge_packages.py --dossier <ID> --worktree <WT> --wave-args <WT>/.agent-staging/payloads/fix-wave.json` |
 | Record a review finding this run fixes (Step 5) | `python3 <S>/build_records.py deferred add <ID> --root <R> --log <DOSSIER> --title '<claim>' --kind <kind> --loc <path:line> --evidence '<text>' --fix '<text>'` |
 | Run the proving tests and the touched packages, once | `python3 <S>/run_tests.py --log <WT>/.agent-staging/fix-tests.log --cwd <WT> [--vm <name> --workdir <WT> --env-script <file>] -- <one command naming every proving test and package>`; a run over 10 minutes: add `--detach`, then `python3 <S>/run_tests.py --wait <WT>/.agent-staging/fix-tests.log` |
-| Run the gates | `python3 <S>/run_gates.py <gates file> --root <WT> [--only a,b] [--env-script <file>] [--build-log <DOSSIER>]` (gates file: the dossier's `GATES:` line, else `.discovery/analysis/gates-<ID>.txt`) |
+| Run the round check | `python3 <S>/run_gates.py <gates file> --root <WT> --round --affected-since <fork sha> [--round-tests a,b] [--env-script <file>] [--build-log <DOSSIER>]` (never the full list: the PR's CI is the full verification; gates file: the dossier's `GATES:` line, else `.discovery/analysis/gates-<ID>.txt`) |
 | Revert a fix that did not hold | `python3 <S>/safe_revert.py --repo <WT> <path> [<path> …]` (uncommitted), or `git -C <WT> revert --no-edit <sha>` (committed) |
 | The worktree's state after the wave | `python3 <S>/git_state.py <WT> --base <base>` |
 | Open the PR, close the records, remove the worktree (Step 6) | `python3 <S>/fix_deferred_pr.py --root <R> --dossier <ID> --test 'D-1=<test>' [--test …] --suite '<summary>' --gates '<summary>' [--fixed D-1=<sha>] [--to-dossier D-3] [--dropped D-5] [--dry-run]` |
@@ -189,7 +189,8 @@ file is read:
    CR no package owns is an `UNROUTED:` line (above). Each package has its own
    worktree `<WT>-<PKG>` on its own branch (`fix/<ID>-deferred-<pkg>`), forked
    from `<WT>`'s head; its payload's `TEST_COMMAND` is cheap: the proving test
-   plus `run_gates.py --affected-since <fork>` (or `--compile-lint-only`), never
+   plus compile, lint and the tests of its own package
+   (`run_gates.py --round --round-kinds compile,lint --affected-since <fork>`), never
    the full gates. The fix payload is never composed or edited by hand, and never
    passes through your prompt.
 3. Call the `phase4-wave` workflow **once**, with the array in that JSON file as
@@ -217,8 +218,8 @@ file is read:
 Each implementer first writes a focused test that fails on the defect (in the
 test path it owns), then fixes it, so every item ends with its own proving test
 and its own commit (`git_state.py` lists them; the return names each item's
-test). It runs only that test and the cheap check; **the full gates run once,
-below**.
+test). It runs only that test, compile, lint and the tests of its own package; **the
+round check runs once, below**.
 
 **Prove the merged batch once, after the merge** (never item by item: the
 recorded runs spent 146 `run_gates` and 93 `run_tests` calls on per-item
@@ -235,8 +236,16 @@ proving). The dossier's `SUITE-COMMAND` and `SUITE:` lines say its suite mode:
 - **`ci`**: the same one focused local run, and CI is the verdict.
 - **`local`**: Phase 6's full `SUITE-COMMAND`, through `run_tests.py`.
 
-Then ONE `run_gates.py` call, the **full gates**, in `<WT>` (the gates file, no
-`--only` unless the branch touches nothing a gate covers). Every test and gate
+Then ONE `run_gates.py` call, the **round check** (`--round --affected-since
+<fork sha>`, `--round-tests` for the new or affected test gates), in `<WT>`:
+compile, lint and format, the `[kind: check]` gates, the feature-axis compiles
+and the gates whose own files changed. The full gates are never run here; the
+pull request's CI is the full verification. The first time every new test is
+green, run the full service-free test suite once (not under `stub` mode, above),
+then the mutation check, then review; later rounds run the round check plus the
+full tests of the packages that round changed. A red CI job is compared with the
+base's CI only when it is doubtful the change caused it; else run that one gate
+locally. Every test and gate
 run goes through these two scripts, never a script of your own: their result
 lines are how the owner's timeline shows the suite. Those runs are also the
 evidence Step 5's reviewers get. When the batch is red, read the failure digest
@@ -289,8 +298,9 @@ the round:
    style and architecture findings), or, only when it truly needs one, an
    owner question or its own dossier (`--to-dossier` in Step 6). Never "later".
 3. All direct fixes of the round go back through Step 4 together: one wave,
-   one merge, test first, and only the affected tests plus `run_gates.py
-   --affected-since` after it, never the full batch again.
+   one merge, test first, and after it the round check (`run_gates.py --round
+   --affected-since`) plus the full tests of the packages the round changed,
+   never the full batch again.
 
 Then run the next review round (`"round": 2`, …) on the branch's whole diff. Repeat until a
 round returns no change request. A change request that a later round raises
@@ -397,8 +407,8 @@ runner, end with `RUNNER: DONE`.
   `never-started` naming the parent end with `RUNNER: FAILED CI not started
   on PR <n>: its parent PR still conflicts`.
 - Packages run concurrently, each in its own worktree; packages that name the
-  same file are one package. The implementer runs its proving test and a cheap
-  check only (`--affected-since`); the full gates run once, in Step 4's batch.
+  same file are one package. The implementer runs its proving test, compile, lint
+  and its package's tests only; the round check runs once, in Step 4's batch.
 - Prove the merged branch once, after the merge: one `run_tests.py` call and one
-  `run_gates.py` call per batch, never one per item. A script prints what it
+  `run_gates.py --round` call per batch, never one per item. A script prints what it
   decided: read its output, do not re-derive it with `cat`, `grep` or `--help`.

@@ -831,7 +831,7 @@ function vrBuild(host, key, data) {
 }
 
 // ---- state ----
-const S = { dm: { list: [], conv: null, enabled: true, busy: false, err: '' }, q: [], runs: [], accounts: [], usageBusy: false, slack: false, scannedAt: '', stubs: { repos: [], openWork: [] }, loaded: false, detail: null, live: false, changedAt: 0, showAll: {}, ctl: {}, pend: {}, qerr: {}, tab: {}, po: {}, fb: {}, fbBusy: null, fbErr: null, rulings: {}, frameH: {}, dsel: {}, chat: {}, docPrs: {}, auto: {}, flows: {}, trust: {} };
+const S = { sweep: {}, trust: {}, dm: { list: [], conv: null, enabled: true, busy: false, err: '' }, q: [], runs: [], accounts: [], usageBusy: false, slack: false, scannedAt: '', stubs: { repos: [], openWork: [] }, loaded: false, detail: null, live: false, changedAt: 0, showAll: {}, ctl: {}, pend: {}, qerr: {}, tab: {}, po: {}, fb: {}, fbBusy: null, fbErr: null, rulings: {}, frameH: {}, dsel: {}, chat: {}, docPrs: {}, auto: {}, flows: {} };
 let R = { kind: 'home' };
 let routeSig = '';
 let scrollTarget = '';
@@ -1328,7 +1328,7 @@ function sideColumn(repo) {
     h('ul', { class: 'tree' }, merged.map(s => h('li', {}, [h('a', { class: 'sub-item', href: hrefStub(repo, s.branch) }, [h('span', { class: 'sid mono' }, [s.branch]), h('span', { class: 'sname', title: s.branch }, [s.dossiers.length + ' dossier(s)'])])])))]));
   return h('section', { class: 'scol full', 'data-k': 'sec:stubs' }, kids);
 }
-/* Non-code PRs into development: plans and research documents, which may skip the stub. Each row says whether it can
+/* Non-code PRs into development or an open stub: plans and research documents. Each row says whether it can
    merge now and why not; Merge all merges the ready ones by script, oldest first. */
 function docPrsView(repo) {
   const st = S.docPrs[repo];
@@ -1337,9 +1337,9 @@ function docPrsView(repo) {
   const prs = st.prs || []; if (!prs.length && !st.merging && !st.error) return null;
   const ready = prs.filter(p => p.ready).length; const queueable = prs.filter(p => (!p.draft || p.draftReady) && !(p.queue && ['queued', 'waiting', 'fixing', 'batching', 'rerunning', 'resolving', 'merging'].includes(p.queue.state))).length;
   const rows = prs.map(p => h('a', { class: 'srow', href: p.url, target: '_blank', rel: 'noopener', 'data-k': 'dp:' + p.number }, [h('span', { class: 'sid mono' }, ['#' + p.number]),
-    h('span', { class: 'sname' }, [h('span', {}, [(p.dossier ? p.dossier + ' · ' : '') + p.title]), h('span', { class: 'small mut rsub' }, [p.kind + ' · ' + p.head])]),
+    h('span', { class: 'sname' }, [h('span', {}, [(p.dossier ? p.dossier + ' · ' : '') + p.title]), h('span', { class: 'small mut rsub' }, [p.kind + ' · ' + p.head + (p.base && p.base !== 'development' ? ' → ' + p.base : '')])]),
     h('span', { class: 'sright' }, [docPrState(p)])]));
-  const head = [h('h2', {}, ['Non-code PRs into development']), h('span', { class: 'small mut' }, [prs.length + ' open · ' + ready + ' ready']), h('span', { class: 'grow' }),
+  const head = [h('h2', {}, ['Non-code PRs']), h('span', { class: 'small mut' }, [prs.length + ' open · ' + ready + ' ready']), h('span', { class: 'grow' }),
     h('button', { class: 'btn sm', type: 'button', 'data-act': 'docprs-refresh', 'data-repo': repo }, ['↻']),
     h('button', { class: 'btn sm primary', type: 'button', 'data-act': 'docprs-merge', 'data-repo': repo, disabled: st.merging || !queueable ? true : null, title: 'Puts every open plan and docs PR in the merge queue, oldest first. The queue fixes what blocks each one (a taken dossier number renumbered, red checks re-run, then the dossier\'s agent for a conflict or a check still red) and merges it. It never touches a stub.' }, [st.merging ? 'Queueing…' : 'Merge all (' + queueable + ')'])];
   return h('section', { class: 'sec', 'data-k': 'sec:docprs' }, [h('div', { class: 'sechd' }, head),
@@ -1404,6 +1404,11 @@ async function flowsAct(btn) {
   const d = await fetchJ('/api/delivery-flows'); if (d && d.repos) { S.flows = {}; d.repos.forEach(v => { S.flows[v.repo] = v; }); }
   render();
 }
+/* Pattern sweep: when /pattern-sweep last ran for this repo (an alarm when never run or older than 30 days). */
+function sweepView(repo) {
+  const v = S.sweep[repo]; if (!v) return null;
+  const txt = v.lastRun === null ? 'Pattern sweep: never run' : 'Pattern sweep: last run ' + (v.days === 0 ? 'today' : v.days + (v.days === 1 ? ' day ago' : ' days ago')) + (v.items === null ? '' : ' (' + v.items + (v.items === 1 ? ' item)' : ' items)'));
+  return h('section', { class: 'sec', 'data-k': 'sec:sweep' }, [h('div', { class: 'sechd' }, [h('h2', {}, ['Pattern sweep']), h('span', { class: 'small ' + (v.stale ? 'err' : 'mut'), title: v.summary || 'Run /pattern-sweep in an interactive session of this repo.' }, [txt])])]);
 /* Trust report alarm: how long ago scripts/trust_report.py last ran for this repository (GET /api/trust-report), alarm style when older than 14 days or never run. */
 function trustView(repo) {
   const v = S.trust[repo]; if (!v) return null;
@@ -1427,6 +1432,7 @@ function repoView(repo) {
   const tv = trustView(repo); if (tv) kids.push(tv);
   const dp = docPrsView(repo); if (dp) kids.push(dp);
   const rl = rulingsView(repo); if (rl) kids.push(rl);
+  const sw = sweepView(repo); if (sw) kids.push(sw);
   const vm = vrRepoLink(repo); if (vm) kids.push(vm);
   kids.push(h('section', { class: 'main-col', 'data-k': 'sec:report' }, [h('h2', {}, ['Open work']), frame]));
   return h('div', {}, kids);
@@ -1969,6 +1975,7 @@ async function load(what) {
   if (all || w.has('runs') || w.has('scan')) jobs.push(fetchJ('/api/delivery-flows').then(d => { if (d && d.repos) { S.flows = {}; d.repos.forEach(v => { S.flows[v.repo] = v; }); } }));
   // The non-code PR list is fetched once per repo; reload it when the server says it changed (or any run changed) while it is on screen.
   if ((all || w.has('docprs') || w.has('runs')) && R.kind === 'repo') { const st = S.docPrs[R.repo]; if (st && !st.loading) jobs.push(fetch('/api/repo/' + enc(R.repo) + '/doc-prs').then(r => r.json()).then(j => { if (!S.docPrs[R.repo] || !S.docPrs[R.repo].merging || j.merging) S.docPrs[R.repo] = j; }).catch(() => {})); }
+  if ((all || w.has('runs')) && R.kind === 'repo') { const sr = R.repo; jobs.push(fetchJ('/api/pattern-sweep/' + enc(sr)).then(d => { if (d && d.repo) S.sweep[sr] = d; })); }
   if ((all || w.has('runs') || w.has('rulings')) && R.kind === 'repo') { const rr = R.repo; jobs.push(fetchJ('/api/rulings/' + enc(rr)).then(d => { if (d && Array.isArray(d.rules)) S.rulings[rr] = d.rules; })); }
   if ((all || w.has('chat')) && R.kind === 'chat') jobs.push(loadChat());
   await Promise.all(jobs);

@@ -188,6 +188,30 @@ was written — and that closes the loop: a failure that cost a double re-spawn
 today makes the next contract in this repo sharper, shipped in the PR where
 the humans reviewing the code see the rule it bought.
 
+**Then route each new or updated rule: check or rule text.** A rule a machine can
+enforce should not sit in the file for agents to re-learn. For each rule you
+drafted or rewrote above, answer in this order and stop at the first yes:
+
+1. **Checkable in this repo?** A grep or lint rule, a clippy or analyzer config, or
+   a checker script in the repo that fails on a violation. Then it becomes a
+   check in this run's PR:
+   - add the check (a repo checker script plus its self-test, or a lint config);
+   - register it in the repo's gates list as `[kind: check]` (`run_gates.py`
+     learns that kind in a separate change; name it, do not edit
+     `run_gates.py` here);
+   - **do not add the rule text.** If the check covers only part of the lesson,
+     add a shortened rule for the judgement part that names the check in its
+     `Why:` line.
+2. **Checkable only in the plugin?** A plugin-side check (`check_payload.py`,
+   `check_docs.py`, `validate_pipeline.py`) would catch it. Never a rule text:
+   record it as a deferred item for the plugin (`/deferred`), and write
+   nothing in this repo's rules file.
+3. **Judgement only?** It stays a rule, as above.
+
+Log one line per rule in `## Build log`: `ROUTE: <rule one-line> -> check <path> |
+plugin-deferred <D-id> | rule`. A check you add is committed with the ADRs and
+shows in the PR description next to the Pending ratification section.
+
 **Then ask the graduation question: does this rule stop at this repo?** A
 rule about this codebase (`use the Lima VM for database tests`) stays. A rule
 about the *craft* — a payload field the skeleton lacks, a contract shape that
@@ -235,3 +259,31 @@ awaiting-yes graduation appears on every overview until its line is closed.
 Improvise no fourth form. A suffix a grep cannot match reads as no suffix,
 and the signal then reports a finished lesson on every run until it is
 skipped for being wrong every time.
+
+### 8c — a finding that keeps coming back becomes a checker gate
+
+A review lens that raises the same category of finding in run after run is a
+check nobody wrote yet. This step is mechanical; do not weigh it.
+
+1. **List the categories.** Take this run's Phase 7 ledger lines in `## Build
+   log` that were accepted. Each carries a `[cat: <slug>]` tag
+   (`phase-7.md`); a line without one is not counted.
+2. **Count earlier runs.** Per category, run
+   `python3 ${PLUGIN_ROOT}/scripts/review_categories.py count --root X
+   --category <slug> --exclude <this dossier>`. It counts the dossiers under
+   `X/.discovery/dossiers/` whose ledger carries that category, this one
+   excluded. The ledger is the record: the verbatim reviewer documents under
+   `.agent-staging/reviews` go with the worktree.
+3. **Threshold.** The category recurs when the count is **2 or more** — with this
+   run, **3 or more runs** in total. Below that, do nothing.
+4. **Size it.** A recurring category gets a lint or checker rule:
+   - **Small** — one grep or lint rule, or a checker script of about 50 lines or
+     fewer, in one repo file set: add it in this PR with its self-test and
+     register it as `[kind: check]` in the gates list, as in 8b step 1.
+   - **Larger** — anything more, or one that needs a new tool or a dependency: a
+     deferred item (`/deferred`) with the category, the counted runs and the
+     proposed rule.
+5. Log `CHECKER-GATE: <slug> runs=<n> -> added <path> | deferred <D-id>` in `## Build log`.
+
+If the rule is judgement-only (no machine can tell a violation), log
+`CHECKER-GATE: <slug> runs=<n> -> judgement` and stop; 8b already covers it.
