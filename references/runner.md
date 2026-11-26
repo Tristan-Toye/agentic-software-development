@@ -830,6 +830,11 @@ A finished `/fix-deferred` that leaves deferred items open never pauses the cycl
 auto work runs autonomously). Every open item, whether one the run was launched with or one its own review added, gets a
 follow-up `/fix-deferred`, at most two per member; after that the member is finished and the next cycle adopts the
 dossier. The `accept` pause below remains only for pauses raised before this rule.
+A held dossier that is not a member of the current cycle (built after the cycle started, e.g. W-039) gets the same
+treatment while automatic work is on and not paused: eager merge launches `/fix-deferred` on its open items when it has
+an open pull request into an open stub and no run of it is live, then at most two follow-up rounds for items still open or
+new ones. The rounds are counted in `<repo>.<ID>.held-fix.json`, so they survive ticks. After the bound the dossier stays
+held and its timeline says so; once no item is open it joins the merge queue as above.
 Accepting a pause ("Accept the open items", or `--resume accept`) rules every open
 deferred item leave-open (`<repo>.<ID>.deferred-owner.json`, as the dashboard's Leave
 open does), so the eager-merge hold lifts and the dossier joins the queue (W-183).
