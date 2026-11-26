@@ -122,7 +122,7 @@ not a chain you type. Before you compose a shell command, take the tool:
 | The state of a worktree after a change — branch, HEAD, ahead/behind, status, diff stat, in-progress merge | `python3 ${PLUGIN_ROOT}/scripts/git_state.py <X> --base <target> [--full] [--diff] [--worktrees]` (compact by default; `--full` adds the diff-stat files) |
 | Run a suite or a subset, locally or in a Linux VM | `python3 ${PLUGIN_ROOT}/scripts/run_tests.py --log <file> [--vm <name> --workdir <X> --env-script <file>] -- <command>` |
 | Wait for CI and read its failures | `python3 ${PLUGIN_ROOT}/scripts/wait_ci.py --pr <N>`; under the runner end the turn with `RUNNER: WAITING ci:<N>` and read `CI RESULT <N>: ...` |
-| Several of the target's gate scripts | write them once to `.agent-staging/gates.txt` (`name: command` per line), then `python3 ${PLUGIN_ROOT}/scripts/run_gates.py .agent-staging/gates.txt --root <X>` |
+| Several of the target's gate scripts | write them once to `.agent-staging/gates.txt` (`name: command` per line; `[kind: check]` marks a cheap checker script), then `python3 ${PLUGIN_ROOT}/scripts/run_gates.py .agent-staging/gates.txt --root <X> --round --affected-since <last head> [--round-tests a,b]`: the round check after each wave, fix or review round. The PR's CI is the full verification; no full local gate run (only `/stub` runs everything) |
 | A spawn payload | `python3 ${PLUGIN_ROOT}/scripts/compose_payloads.py …` fills every mechanical field; you write only the `@@FILL_<FIELD>@@` fields (Phase 4) |
 | Lint, gate and admit a wave | `python3 ${PLUGIN_ROOT}/scripts/prepare_wave.py …` (Phase 4) |
 | Read or write the dossier | `python3 ${PLUGIN_ROOT}/scripts/dossier_edit.py <section, log, set, add, remove or replace-section> …` |
