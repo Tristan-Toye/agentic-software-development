@@ -1409,6 +1409,7 @@ function sweepView(repo) {
   const v = S.sweep[repo]; if (!v) return null;
   const txt = v.lastRun === null ? 'Pattern sweep: never run' : 'Pattern sweep: last run ' + (v.days === 0 ? 'today' : v.days + (v.days === 1 ? ' day ago' : ' days ago')) + (v.items === null ? '' : ' (' + v.items + (v.items === 1 ? ' item)' : ' items)'));
   return h('section', { class: 'sec', 'data-k': 'sec:sweep' }, [h('div', { class: 'sechd' }, [h('h2', {}, ['Pattern sweep']), h('span', { class: 'small ' + (v.stale ? 'err' : 'mut'), title: v.summary || 'Run /pattern-sweep in an interactive session of this repo.' }, [txt])])]);
+}
 /* Trust report alarm: how long ago scripts/trust_report.py last ran for this repository (GET /api/trust-report), alarm style when older than 14 days or never run. */
 function trustView(repo) {
   const v = S.trust[repo]; if (!v) return null;
