@@ -4,6 +4,7 @@ import { homedir } from "node:os"
 import { dirname, join, resolve } from "node:path"
 import { configLoader, protectRegexes, type Config } from "../../shared/config"
 import { sealedRead } from "../../shared/blind-read"
+import { noPoll, noPollOn, shortAgent } from "../../shared/no-poll"
 import { readGuard } from "../../shared/read-guard"
 
 // Context guard — keeps an orchestrator's carried context small, and stops the reads
@@ -268,6 +269,10 @@ export const ContextGuardPlugin: Plugin = async () => {
         if (agent === "integration-test-author" && ["read", "edit", "write"].includes(input.tool)) {
           reason = sealedRead(String(output.args?.filePath ?? ""), process.cwd())
           prefix = "sealed"
+        } else if (input.tool === "bash" && noPollOn() && cfg.no_poll_agents.includes(shortAgent(agent))) {
+          // The building sub-agents never poll (shared/no-poll.ts); the work-on orchestrator is not one of them.
+          reason = noPoll("Bash", { command: output.args?.command, run_in_background: output.args?.run_in_background }, cfg.no_poll_sleep_max)
+          prefix = "no polling"
         } else {
           if (!agent || !cfg.guard_agents.includes(agent)) return
           reason = refusal(input.tool, output.args, cfg)

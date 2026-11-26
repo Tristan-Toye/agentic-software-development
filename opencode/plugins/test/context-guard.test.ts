@@ -172,6 +172,11 @@ const cargo = "limactl shell nightwatch -- cargo test -p foo"
 check("dossier read refused", (await attempt("g_work", "read", { filePath: dossier }))?.includes("dossier_edit.py section") === true)
 check("dossier read with limit allowed", (await attempt("g_work", "read", { filePath: dossier, offset: 1, limit: 50 })) === undefined)
 check("dossier: other agent allowed", (await attempt("g_other", "read", { filePath: dossier })) === undefined)
+// The no-polling guard (shared/no-poll.ts): the implementer's bash may not poll; the orchestrator's may.
+check("no-poll: implementer tail -f refused", (await attempt("g_other", "bash", { command: "tail -f build.log" }))?.includes("no polling") === true)
+check("no-poll: implementer sleep loop refused", (await attempt("g_other", "bash", { command: "while true; do sleep 5; done" })) !== undefined)
+check("no-poll: implementer foreground build allowed", (await attempt("g_other", "bash", { command: "timeout 600 cargo test -p foo" })) === undefined)
+check("no-poll: orchestrator may tail -f", (await attempt("g_work", "bash", { command: "tail -f build.log" })) === undefined)
 check("unknown session allowed", (await attempt("g_unknown", "read", { filePath: dossier })) === undefined)
 
 const bigRefusal = await attempt("g_work", "read", { filePath: big })
@@ -209,7 +214,7 @@ check("log: timestamped", lines.every((l) => /^\d{4}-\d\d-\d\dT[\d:.]+Z /.test(l
 check("log: mask lines for ses_w (two moves)", ev("mask").filter((l) => l.includes(" ses_w ")).length === 2)
 check("log: mask line format", ev("mask").some((l) => / mask ses_w watermark a4: ~\d+k -> ~\d+k tokens, 2 outputs, 0 inputs, 2 reasoning$/.test(l)))
 check("log: refused line format", ev("refused").some((l) => / refused g_work work-on read: read a dossier by section/.test(l)))
-check("log: refusals count", ev("refused").length === 10)
+check("log: refusals count", ev("refused").length === 12)
 check("log: floor line for the thrash session", ev("floor").some((l) => / floor ses_floor ~\d+k tokens, a move would free ~\d+k: /.test(l)))
 check("log: no mask line on every step", ev("mask").filter((l) => l.includes(" ses_thrash ")).length === 1)
 
