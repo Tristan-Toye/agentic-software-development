@@ -79,8 +79,12 @@ Detail: `ref_section` with `phase-7-conditional` and the heading "Resolve RULES 
   **one-line-per-CR ledger**, appended to `## Build log` through the round's checkpoint `log` — one line per change request, in this form:
 
   ```
-  - r1 <lens>: CR-<lens>-<n> <one-line requirement> — <path:line> — accepted | demoted (<missing evidence>)
+  - r1 <lens>: CR-<lens>-<n> <one-line requirement> — <path:line> [cat: <slug>] — accepted | demoted (<missing evidence>)
   ```
+
+  `<slug>` is a short lower-case kebab-case name for the kind of finding (the CR's `Rule`,
+  reduced: `bare-except`, `unchecked-index`); reuse a slug already in this repo's ledgers
+  (`grep -rhoE '\[cat: [^]]+' .discovery/dossiers`). Phase 8c counts it.
 
   Never paste a reviewer document into the dossier — a document has its own
   headings, and the dossier body has six fixed sections. The full document is
