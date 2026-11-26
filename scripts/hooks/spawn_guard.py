@@ -26,7 +26,12 @@ plugin's agents whose prompt:
   stages data, and a payload belongs under `<worktree>/.agent-staging/`;
 - carries a secret-shaped value — credentials in a URL, or a
   `…TOKEN/SECRET/PASSWORD/API_KEY=<literal>` assignment: name the file or
-  script that sets it instead.
+  script that sets it instead;
+- carries an unexpanded `@@TOKEN@@` template placeholder (LRN-0136: the prompt
+  is the one text check_payload.py never reads, pasted from the src file
+  instead of the substituted final);
+- tells the agent to skip the commit hook with `--no-verify` (LRN-0088: only
+  the orchestrator skips it; a line that forbids it passes).
 
 A launch of the plugin's workflows (phase4-wave, phase7-review) is the one
 place a pointer is the form: the user approves the launch, its spawns are not
@@ -85,6 +90,9 @@ MIN_PASTED_FIELDS = 4  # the smallest payload any agent takes has more
 STAGED_PATH = re.compile(r"\.agent-staging/\S+")
 SCRATCHPAD = re.compile(r"(?:/private)?/tmp/claude-\d+/")
 URL_CREDENTIALS = re.compile(r"\b[a-z][a-z0-9+.-]*://[^/\s:@<>$]+:[^/\s@<>$]+@")
+TEMPLATE_TOKEN = re.compile(r"@@[A-Z][A-Z0-9_]*@@")
+NO_VERIFY = re.compile(r"(?<![\w-])--no-verify\b")
+NEGATED = re.compile(r"\b(never|not|don't|do not|no|without)\b", re.I)
 SECRET_ASSIGNMENT = re.compile(
     r"\b[A-Z0-9_]*(?:TOKEN|SECRET|PASSWORD|PASSWD|API_KEY|APIKEY)\s*=\s*(?![<$\"'{(])[^\s\"']{8,}"
 )
@@ -133,6 +141,20 @@ def problems(prompt: str) -> list[str]:
             "TOKEN/SECRET/PASSWORD/API_KEY assignment). Name the file or script that sets it "
             "(e.g. the repo's env script) and let the agent's command read it there"
         )
+    if TEMPLATE_TOKEN.search(prompt):
+        found.append(
+            "the prompt carries an unexpanded template placeholder (%s): it was pasted from the "
+            "src file, not the substituted final under .agent-staging/payloads/. Re-read the final "
+            "in this turn and paste that" % TEMPLATE_TOKEN.search(prompt).group(0)
+        )
+    for line in prompt.splitlines():
+        hit = NO_VERIFY.search(line)
+        if hit and not NEGATED.search(line[: hit.start()]):
+            found.append(
+                "the prompt tells the agent to skip the commit hook (--no-verify): only the "
+                "orchestrator skips it, never a payload or resume message (LRN-0088)"
+            )
+            break
     return found
 
 
@@ -322,6 +344,11 @@ def selftest() -> int:
           spawn(pasted + "HARNESS: DATABASE_URL comes from deploy/host/test-env.sh\n") is None)
     check("a placeholder assignment passes", spawn(pasted + "HOOKS: API_KEY=<from the env file>\n") is None)
     check("a placeholder URL passes", spawn(pasted + "HARNESS: postgres://<user>:<pass>@host/db\n") is None)
+    check("LRN-0136: an unexpanded @@TOKEN@@ is denied", bool(spawn(pasted + "FIXTURES: @@FIXTURES@@\n")))
+    check("LRN-0136: expanded fields pass", spawn(pasted + "FIXTURES: FlushQueue()\n") is None)
+    check("LRN-0088: a --no-verify instruction is denied",
+          bool(spawn(pasted + "HOOKS: commit with git commit --no-verify\n")))
+    check("LRN-0088: a line that forbids it passes", spawn(pasted + "HOOKS: never use --no-verify\n") is None)
     check("other agents are not its business", spawn(recorded, agent="Explore") is None)
     check("other tools are not its business", spawn(recorded, tool="Bash") is None)
 
