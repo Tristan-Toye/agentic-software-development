@@ -19,7 +19,7 @@ const AGENT_MODELS = {
   'agentic-software-development:reviewer': { model: 'sonnet', effort: 'high' },
   'agentic-software-development:scribe': { model: 'haiku', effort: 'low' },
   'agentic-software-development:stub-materialiser': { model: 'haiku', effort: 'low' },
-  'agentic-software-development:unit-test-author': { model: 'haiku', effort: 'low' },
+  'agentic-software-development:unit-test-author': { model: 'sonnet', effort: 'high' },
 }
 // An agent type outside the table still never inherits the session model.
 const modelFor = (agentType) => AGENT_MODELS[agentType] || { model: 'sonnet', effort: 'high' }
