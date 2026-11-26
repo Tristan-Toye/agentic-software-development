@@ -21,6 +21,8 @@ export type Config = {
   nav_redirect: boolean
   nav_small_bytes: number
   nav_grep_context: number
+  no_poll_agents: string[]
+  no_poll_sleep_max: number
 }
 
 export const DEFAULTS: Config = {
@@ -40,6 +42,8 @@ export const DEFAULTS: Config = {
   nav_redirect: true,
   nav_small_bytes: 4000,
   nav_grep_context: 5,
+  no_poll_agents: ["implementer", "stub-materialiser"],
+  no_poll_sleep_max: 5,
 }
 
 const num = (v: unknown, fallback: number, min = 0) => {
@@ -95,6 +99,8 @@ export function configLoader(path: string): () => Config {
           nav_redirect: bool(raw.nav_redirect, DEFAULTS.nav_redirect),
           nav_small_bytes: num(raw.nav_small_bytes, DEFAULTS.nav_small_bytes),
           nav_grep_context: num(raw.nav_grep_context, DEFAULTS.nav_grep_context, 1),
+          no_poll_agents: strings(raw.no_poll_agents, DEFAULTS.no_poll_agents),
+          no_poll_sleep_max: num(raw.no_poll_sleep_max, DEFAULTS.no_poll_sleep_max),
         }
         mtimeSeen = mtime
       }

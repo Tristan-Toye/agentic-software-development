@@ -302,6 +302,19 @@ gets the same two stops from this plugin:
   see `references/dm-agent.md`. Runner sessions are unaffected. It fails
   open on input it cannot parse, and logs that.
 
+- **A no-polling guard.** `hooks/hooks.json` runs `shared/claude/no-poll.ts`
+  before Bash. In a sub-agent listed in `no_poll_agents` of
+  `shared/context-guard.yaml` (default `implementer`, `stub-materialiser`;
+  the plugin prefix is optional) it refuses `run_in_background`, a `sleep` in a
+  `while`/`until`/`for` loop or a bare `sleep` above `no_poll_sleep_max`
+  seconds (default 5), `watch`, `tail -f`, a trailing `&`, and a
+  `while`/`until` loop that re-checks a process, file or log; the message
+  points at one foreground call or the blocking `run_tests.py --wait`. Ordinary
+  foreground commands and `timeout` wrappers pass; the orchestrator, the main
+  session and other agents are never checked (the hook input has no `agent_id`
+  there). `ASD_NO_POLL=0` turns it off. The opencode plugin applies the same
+  rules (`shared/no-poll.ts`). It fails open.
+
 ### Spawns the auto mode classifier can judge
 
 In auto mode Claude Code classifies the task a spawn delegates from the spawn

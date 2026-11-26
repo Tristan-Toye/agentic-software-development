@@ -141,6 +141,9 @@ When your prompt is `PAYLOAD_FILE: <path>` (with `PAYLOAD_SHA256`), read that fi
    `until`/`while` loop, and never check progress in repeated calls: every such
    turn costs a full context read and shortens nothing. A run that finishes
    inside one call needs no `--detach`.
+   The no-polling hook enforces this: a Bash call with `run_in_background`, a `sleep` in a loop or
+   above 5 s, `watch`, `tail -f` or a `while`/`until` that re-checks a file or process is refused with
+   the instead-do message; a `timeout` wrapper and the blocking `--wait` calls pass.
    Run only the short, foreground checks of your own package: compile, lint and its
    existing tests (in a fix round also the named new tests, or the tests covering
    your package after a review change). Never the full gates list or the full
