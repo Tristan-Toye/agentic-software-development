@@ -38,6 +38,7 @@ import { mergeDetectorEnabled, nextMerges, readMergeSeen, writeMergeSeen, type M
 import { sh } from "./runs.ts"
 import { enableScanWorker } from "./scanpool.ts"
 import { flowViews, setFlow } from "./deliveryflows.ts"
+import { trustViews } from "./trustreport.ts"
 import { argvFor, buildFacts, markMerged, runAutoWork, tickAutoWork, viewsFor } from "./autowork.ts"
 import { logBlock } from "../claude/permission-denied.ts"
 
@@ -775,6 +776,7 @@ export async function handle(req: Request): Promise<Response> {
     emitChange("runs")
     return json({ ok: r.ok, output: r.output }, r.ok ? 200 : 409)
   }
+  if (req.method === "GET" && path === "/api/trust-report") return json({ repos: trustViews(viewsFor((await getRunsA()).runs).map((v) => v.repo)) })
   if (req.method === "GET" && path === "/api/delivery-flows") return json({ repos: flowViews(viewsFor((await getRunsA()).runs).map((v) => v.repo)) })
   if (req.method === "POST" && path === "/api/delivery-flows") {
     const origin = req.headers.get("origin")

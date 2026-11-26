@@ -332,6 +332,12 @@ passed on another try. So under Claude Code the payload is pasted:
 
 opencode has no classifier and keeps spawning by the file.
 
+## Trust report
+
+`scripts/trust_report.py --root <repo>` measures how far the dossier PRs the agents built can be trusted once they merged. For every PR merged into a `stub/*` branch it counts (a) the stub fixes `/stub` attributed to the dossier (the `fix/<ID>-stub<date>-<round>` PRs, and attributions written in the stub's record), (b) reverts of its commits, plus later fix commits that removed the same lines within 14 days (a heuristic, labelled as one), and (c) bug-kind deferred items that say they were found after the merge. Each dossier gets a score and an ok, watch or FLAG; the output is Markdown per stub with totals and a trend, or JSON with `--json`. It only reads the checkout (`git log`, `gh pr list`).
+
+Run it after each stub lands, once the stub PR is merged. Every run writes `~/.agentic/trust-report/<repo>.json`, and the repo page of the dashboard shows "Trust report: last run N days ago" with the flagged count, in alarm style when the last run is older than 14 days or there is none.
+
 ## Token spend
 
 A `/work-on` orchestrator re-sends its whole context on every step, so what it
@@ -461,6 +467,7 @@ are in `ledger/token-spend.md`; `scripts/token_report.py` produces the numbers.
 | `scripts/setup_claude_account.sh` | Adds a second Claude login in its own `CLAUDE_CONFIG_DIR` (settings, plugins and hooks shared by symlink) and registers it in `~/.agentic/accounts.json`, so the runner switches accounts when one hits its usage limit. |
 | `scripts/install_questions_agent.sh` | Installs or removes (`--uninstall`) the `dev.tristan.asd-questions` LaunchAgent that runs `shared/questions/server.ts`; needs `--slack-user U…`, `--dry-run` prints the plist. |
 | `scripts/token_report.py` | Where an opencode setup spends its tokens in a time window: per agent, per orchestrator run, carried context by kind, tool adoption and bypasses, plugin events. `--json` snapshots and `--compare` diffs them; the evidence behind `ledger/token-spend.md`. `--selftest` checks the checker. |
+| `scripts/trust_report.py` | How far a dossier PR can be trusted after it merged into a weekly stub: per stub and dossier, the fixes `/stub` attributed to it, the reverts (explicit, plus a labelled same-lines fix-up heuristic) and the bugs found after the merge, with a score, totals and a trend. Writes `~/.agentic/trust-report/<repo>.json`, which the dashboard shows as "Trust report: last run N days ago". Run it after each stub lands. `--selftest` checks the checker. |
 | `scripts/build_claude_plugin.py` | The Claude Code surface, derived from the opencode sources. `--check` fails on drift; `--selftest` checks the checker. |
 
 ## Why the validator matters more than it looks
