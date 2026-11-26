@@ -46,7 +46,11 @@ the `queued` state, the account routing and every owner question apply unchanged
 
 `--eager-merge on` puts each dossier on the open stub as soon as it is finished, through the existing merge queue
 (`merge_dossier.py ID --enqueue`, the Merge button's entry point), so the stub grows during the week and Integrate has
-little left to merge. Finished is the same as for a cycle member: build done (status `pr` or `done`), no run live (so a
+little left to merge. A held dossier (built, no open item ruled away, open items left) that is not a cycle member (it was
+built after the cycle started, so step_cycle never fixes it) gets /fix-deferred too, while auto work is on and not paused:
+`held_fix_step` launches it on the open items through the normal runner when no run of the dossier is live, then up to
+FIX_FOLLOWUPS follow-up rounds for items still open or new; rounds are kept in `<repo>.<ID>.held-fix.json`. After the bound it stays
+held, with a timeline line saying so. Finished is the same as for a cycle member: build done (status `pr` or `done`), no run live (so a
 fix-deferred run is over) and no open deferred item left (one the owner ruled to stay open does not count). The dossier
 must have an open pull request into an open stub. A dossier whose `<repo>.<dossier>.merge.json` exists is never enqueued (a `merged` one only until a later run of it, e.g. /fix-deferred, finishes with a new open PR: blocks_eager)
 again (queued, running, waiting, merged, failed or cancelled). A failed one is retried by itself when the failure was transient (CI still running or timed out, a gh/network error; at most twice per head of its stack, one timeline line each) or when a later run of the dossier has finished; a cancelled one, and a failure that needs a human (conflict, red checks, spent resolve-merge attempts), wait for the owner. It works with auto work
@@ -866,6 +870,52 @@ def note_held(repo: str, run: dict) -> bool:
     return True
 
 
+def held_fix_path(repo: str, dossier: str) -> str:
+    return os.path.join(runs_dir(), f"{repo}.{dossier}.held-fix.json")
+
+
+def held_fix_step(repo: str, root: str, run: dict) -> str:
+    """A held dossier that is not a member of the current cycle (it was built after the cycle started, so step_cycle never
+    fixes it) gets the member treatment: /fix-deferred on its open items through the normal runner (slot cap and queue
+    unchanged), then at most FIX_FOLLOWUPS follow-up rounds while items are still open or new ones appeared. The rounds
+    are counted in `<repo>.<ID>.held-fix.json`, so they survive ticks. Only for an enabled, not paused repository, and
+    never while a run of the dossier is live (held_by_deferred already says no live run; the fresh-launch wait below covers
+    the moment before the runner's file shows the run just started). Returns "launched", "bounded" or "".
+    The caller has checked that the dossier has an open PR into an open stub."""
+    if not enabled(repo):
+        return ""
+    st = read_json(state_path(repo), None) or {}
+    if st.get("paused") or run["id"] in {m.get("id") for m in st.get("members") or []}:
+        return ""   # a paused repository starts nothing; a member is the cycle's own
+    items = open_items(run)
+    if not items or (run.get("runner") or {}).get("state") in LIVE:
+        return ""
+    path = held_fix_path(repo, run["id"])
+    rec = read_json(path, {}) or {}
+    n = int(rec.get("rounds") or 0)
+    rj = run.get("runner") or {}
+    if rec.get("launch") and (rj.get("pid"), rj.get("started")) == (rec["launch"].get("pid"), rec["launch"].get("started")) and age(rec["launch"]["ts"]) <= grace():
+        return "waiting"   # the run just started does not show in the facts yet
+    tl = os.path.join(runs_dir(), f"{repo}.{run['id']}.jsonl")
+    if n >= 1 + FIX_FOLLOWUPS:   # the first run and FIX_FOLLOWUPS follow-ups are spent
+        if not rec.get("bounded"):
+            merge_dossier.append_line(tl, {"ts": now(), "kind": "runner", "text":
+                f"auto work: deferred {', '.join(items[:8])} still open after {FIX_FOLLOWUPS} follow-up /fix-deferred rounds; "
+                f"the dossier stays held. Fix them (Deferred tab, Fix) or rule them leave-open; it joins the merge queue by itself after that."})
+            write_atomic(path, {**rec, "bounded": True})
+        return "bounded"
+    ok, out = start_runner(root, run["id"], "fix-deferred", ",".join(items))
+    if not ok:
+        print(f"auto_work: {repo}: held {run['id']}: could not start /fix-deferred: {out}")
+        return ""
+    write_atomic(path, {"rounds": n + 1, "items": items, "launch": {"ts": now(), "pid": rj.get("pid"), "started": rj.get("started")}})
+    merge_dossier.append_line(tl, {"ts": now(), "kind": "runner", "text":
+        f"auto work: held by open deferred {', '.join(items[:8])}; /fix-deferred "
+        + ("started" if n == 0 else f"follow-up {n}/{FIX_FOLLOWUPS} started") + " (the dossier is not a member of the cycle)"})
+    print(f"auto_work: {repo}: held {run['id']}: /fix-deferred on {', '.join(items)} (round {n + 1})")
+    return "launched"
+
+
 def stub_dossiers(root: str, branch: str) -> list[str]:
     """The dossiers with an open pull request into the stub, asked of merge_dossier.py (the same view Integrate has)."""
     script = os.environ.get("ASD_MERGE_BIN") or os.path.join(HERE, "merge_dossier.py")
@@ -1001,8 +1051,11 @@ def eager_step(repo: str, root: str, facts: dict) -> list[str]:
     for b in stubs:
         on_stub.update(stub_dossiers(root, b))
     for r in held:
-        if r["id"].upper() in on_stub:
-            note_held(repo, r)
+        if r["id"].upper() in on_stub and not held_fix_step(repo, root, r):
+            note_held(repo, r)   # auto work off or paused, a member, or no run could be started: only say what holds it
+    for r in todo:   # cleared: the next time it is held starts its rounds over
+        with contextlib.suppress(OSError):
+            os.remove(held_fix_path(repo, r["id"]))
     if not todo:
         return []
     kan = kanban_ids(repo, root)
@@ -1854,6 +1907,7 @@ def selftest() -> int:
     LAND = real_land
     kanban_selftest(check)
     jira_branch_selftest(check)
+    held_fix_selftest(check)
     land_dirs_ok = [land_stub.settings_path(), runs_dir()] != real_dirs
     check("the selftest used its own settings and runs directory", land_dirs_ok)
     print("FAILED: " + ", ".join(fails) if fails else "all ok")
@@ -1895,6 +1949,76 @@ def jira_branch_selftest(check) -> None:
             eager_step(repo, root, facts)
             calls = open(log_).read().splitlines() if os.path.exists(log_) else []
             check("eager (Jira-key branch): W-009 is enqueued by its own id", calls == [f"merge W-009 --enqueue --root {root} --by eager"], calls)
+        finally:
+            for k, v in saved.items():
+                if v is None: os.environ.pop(k, None)
+                else: os.environ[k] = v
+
+
+def held_fix_selftest(check) -> None:
+    """A held dossier that is not a cycle member gets /fix-deferred (held_fix_step), in a temp dir with fake runner and merge
+    scripts. Nothing touches ~/.agentic."""
+    keys = ("ASD_RUNS_DIR", "ASD_STUB_AUTOMERGE_FILE", "ASD_RUNNER_BIN", "ASD_MERGE_BIN", "ASD_DELIVERY_FLOWS")
+    saved = {k: os.environ.get(k) for k in keys}
+    with tempfile.TemporaryDirectory() as tmp:
+        runs, root, log_ = os.path.join(tmp, "runs"), os.path.join(tmp, "held-repo"), os.path.join(tmp, "calls.txt")
+        os.makedirs(runs); os.makedirs(root)
+        repo = repo_name(root)
+        open(os.path.join(tmp, "runner.py"), "w").write("import sys\nopen(%r,'a').write('runner '+' '.join(sys.argv[1:])+'\\n')\nprint('started')\n" % log_)
+        open(os.path.join(tmp, "merge.py"), "w").write(
+            "import sys\nif '--stub-dossiers' in sys.argv: print('W-039')\n"
+            "else: open(%r,'a').write('merge '+' '.join(sys.argv[1:])+'\\n'); print('queued')\n" % log_)
+        os.environ.update(ASD_RUNS_DIR=runs, ASD_STUB_AUTOMERGE_FILE=os.path.join(tmp, "settings.json"), ASD_RUNNER_BIN=os.path.join(tmp, "runner.py"),
+                          ASD_MERGE_BIN=os.path.join(tmp, "merge.py"), ASD_DELIVERY_FLOWS=os.path.join(tmp, "flows.json"))
+        try:
+            calls = lambda: open(log_).read().splitlines() if os.path.exists(log_) else []
+            fixes = lambda: [l for l in calls() if l.startswith("runner") and "fix-deferred" in l]
+            enq = lambda: [l for l in calls() if l.startswith("merge") and "--enqueue" in l]
+            fin = lambda pid: {"state": "done", "command": "work-on" if pid == 1 else "fix-deferred", "pid": pid, "started": f"t{pid}"}
+            def facts(pid, items, runner_state="done"):
+                rn = {**fin(pid), "state": runner_state}
+                return {"root": root, "stubs": [{"branch": "stub/2026-11-24", "state": "accepting"}],
+                        "runs": [{"id": "W-039", "status": "pr", "blockedBy": [], "runner": rn, "deferred": [{"id": i, "state": s_} for i, s_ in items]}]}
+            def timeline():
+                try:
+                    return open(os.path.join(runs, f"{repo}.W-039.jsonl"), encoding="utf-8").read()
+                except OSError:
+                    return ""
+            set_eager(repo, True)
+            op = [("D-1", "open"), ("D-2", "open"), ("D-3", "fixed"), ("D-4", "deprecated")]
+            # Paused repository: the cycle's pause means nothing is started.
+            all_ = read_json(land_stub.settings_path(), {}) or {}
+            write_atomic(land_stub.settings_path(), {**all_, repo: {**(all_.get(repo) or {}), "auto_work": True}})
+            write_atomic(state_path(repo), {**blank(repo, root), "paused": {"reason": "x", "kind": "member"}})
+            eager_step(repo, root, facts(1, op))
+            check("held non-member: a paused repository launches no fix-deferred", fixes() == [], calls())
+            write_atomic(state_path(repo), blank(repo, root))
+            # Auto work off: only the held note, as before.
+            write_atomic(land_stub.settings_path(), {**all_, repo: {**(all_.get(repo) or {}), "auto_work": False}})
+            eager_step(repo, root, facts(1, op))
+            check("held non-member: auto work off launches nothing and still says what holds it", fixes() == [] and "eager merge: held" in timeline(), (calls(), timeline()))
+            write_atomic(land_stub.settings_path(), {**all_, repo: {**(all_.get(repo) or {}), "auto_work": True}})
+            # A live run: never a second one.
+            eager_step(repo, root, facts(1, op, "running"))
+            check("held non-member: a live run of the dossier means no launch", fixes() == [], calls())
+            # Round 1: the open items, and only those (a fixed and a left-open item do not count).
+            eager_step(repo, root, facts(1, op))
+            check("held non-member: launches /fix-deferred on its open items", fixes() == [f"runner W-039 --root {root} --command fix-deferred --items D-1,D-2"], calls())
+            eager_step(repo, root, facts(1, op))
+            check("held non-member: no second launch while the fresh run does not show yet", len(fixes()) == 1, calls())
+            # The fix run ended leaving D-2 open and adding D-5: follow-up 1, then follow-up 2.
+            eager_step(repo, root, facts(2, [("D-2", "open"), ("D-5", "open")]))
+            check("held non-member: a follow-up runs for the items still open or newly added", len(fixes()) == 2 and fixes()[1].endswith("--items D-2,D-5"), fixes())
+            check("the rounds survive ticks: held-fix.json counts them", (read_json(held_fix_path(repo, "W-039"), {}) or {}).get("rounds") == 2)
+            eager_step(repo, root, facts(3, [("D-5", "open")]))
+            check("held non-member: the second follow-up runs", len(fixes()) == 3, fixes())
+            eager_step(repo, root, facts(4, [("D-5", "open")])); eager_step(repo, root, facts(4, [("D-5", "open")]))
+            check("held non-member: after 2 follow-ups nothing more is launched", len(fixes()) == 3, fixes())
+            check("held non-member: after the bound the timeline says it stays held, once", timeline().count("stays held") == 1, timeline())
+            # Cleared: eager merge queues it, and the rounds start over next time.
+            eager_step(repo, root, facts(4, [("D-5", "fixed")]))
+            check("held non-member: once no item is open eager merge queues it", enq() == [f"merge W-039 --enqueue --root {root} --by eager"], calls())
+            check("held non-member: a cleared dossier drops its round count", not os.path.exists(held_fix_path(repo, "W-039")))
         finally:
             for k, v in saved.items():
                 if v is None: os.environ.pop(k, None)

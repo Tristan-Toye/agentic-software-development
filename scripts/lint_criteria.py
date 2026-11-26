@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Phase 3's criteria linter: three defects a dossier's acceptance criteria
+"""Phase 3's criteria linter: four defects a dossier's acceptance criteria
 carry that no agent notices until a test author turns them into an assertion.
 
 Recorded rulings traced to criteria that contradicted themselves or named an
@@ -18,6 +18,10 @@ no model.
     count-environment      a criterion with a count of things ("26 values",
                            "exactly 4 rows") that carries no `env:` annotation
                            and no frozen command in parentheses (`grep ...`)
+    changed-file-set       a criterion that pins the changed-file set ("exactly
+                           three files", "a fourth file falsifies") and names
+                           no decision record (`docs/adr`, ADR): Phase 8a ships
+                           one, so the criterion forbids the record (LRN-0115)
 
     no-discriminating-input  a criterion says the behaviour passes/holds/works ("by construction") and names no input
                            value, identifier or negative case, so no test can fail it
@@ -69,6 +73,10 @@ PER_CASE = re.compile(r"\b(?:per|for each|for every|in each|in every|each|every)
 # a `CRITERIA-LINT-WARN` prefix, never failing the run. `refusal-text-uncovered` keeps one in five hits a quoted
 # command or log phrase rather than a refusal text, so it warns until its detection is tighter.
 WARN_RULES = frozenset({"refusal-text-uncovered"})
+CHANGED_SET = re.compile(r"git diff[^.\n]*--name-only|\bchanged[- ]files?\b|\bfiles? changed\b|\bname[sd]? (?:exactly )?\w+ files\b", re.I)
+PINNED_SET = re.compile(r"\bexactly \w+ files?\b|\b(?:second|third|fourth|fifth|sixth|extra|further|additional|other) files?\b"
+                        r"|\bno other files?\b|\bnothing else\b|\bonly these\b", re.I)
+RECORD = re.compile(r"docs/adr|decision record|\bADRs?\b", re.I)
 ENV = re.compile(r"\benv:\s*\S|\((?:grep|git|wc|find|rg|ls)\b[^)]*\)", re.I)
 
 
@@ -117,6 +125,10 @@ def lint_one(number: int, text: str) -> list[str]:
     if pc and len(re.findall(r"`[^`]+`", text)) < 2 and not re.search(r"[:(][^)]*,[^)]*[,)]|\bone of\b", flat):
         out.append("criterion %d [per-case-undefined] %r enumerates no cases: list each case, or say how the "
                    "set is derived" % (number, pc.group(0)))
+    if CHANGED_SET.search(flat) and PINNED_SET.search(flat) and not RECORD.search(flat):
+        out.append("criterion %d [changed-file-set] pins the changed files and names no decision record: "
+                   "Phase 8a ships an ADR and its index, so list `docs/adr/` beside the files or scope the "
+                   "criterion to the change" % number)
     return out
 
 
@@ -188,6 +200,14 @@ def selftest() -> int:
     check("timing with no clock", "criterion 2 [timing-clock]" in j)
     check("count with no env", "criterion 3 [count-environment]" in j)
     check("example outside a between range", "criterion 4 [example-vs-predicate]" in j)
+    pinned = "\n".join([
+        "## Acceptance criteria",
+        "1. `git diff --name-only` over the merged branch names exactly three files; a fourth file falsifies. (owner: a)",
+    ])
+    f, _ = lint_text(pinned)
+    check("LRN-0115: a pinned changed-file set with no record is flagged", any("[changed-file-set]" in x for x in f))
+    f, _ = lint_text(pinned.replace("exactly three files;", "exactly three files plus the ADR and docs/adr/index.md;"))
+    check("LRN-0115: the same criterion naming the record passes", not f)
     check("no criteria section", lint_text("## Other\n1. x\n") == ([], 0))
     # review-cluster rules: each fires on its defect and is silent on its negative control
     unfalsifiable = ("## Acceptance criteria\n1. The cleanup passes by construction. (owner: tests/a.py; env: CI)\n"

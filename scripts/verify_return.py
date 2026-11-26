@@ -18,6 +18,7 @@ agent's tool list makes impossible.
 
     verify_return.py --root X --branch B --base SHA
         [--owned p1,p2] [--census-paths p1,p2] [--shared-tree p1,p2]
+        [--staged-copy REL=STAGED[,...] [--staged-allow N]]
         [--contract-hash H [--contract-files f1,f2]]
         [--payload FILE --payload-sha256 H]
         [--release HOLDER --provider P --model M [--slot N]]
@@ -37,6 +38,14 @@ must already exist at `--base` (a census row names an existing file) and be chan
 in place: a census path whose base content was almost wholly deleted and re-added
 is flagged `whole-file-rewrite`, and a census path that is new, or gone, at HEAD is
 flagged `census-path`.
+
+`--staged-copy REL=STAGED[,...]` (LRN-0174) judges a blind author's whole-file rewrite of an
+existing test script BEFORE any behaviour run: the file at `REL` (relative to `--root`) is
+compared with the staged copy `STAGED` the author was handed, line by line as a multiset. A staged
+line missing from the returned file beyond the `--staged-allow N` the payload sanctioned (default
+0) is flagged `staged-delta` with the first lost lines: re-emission corrupted preserved bytes
+(heredoc fixtures, indent, brackets) that a green suite cannot see and that no commit diff shows
+while the author's tree is uncommitted. Additions are never a finding.
 
 `--uncommitted` is for an agent that writes files and never commits
 (`document-drafter`: `--owned` is its `TARGET_PATHS`). Files it wrote under
@@ -144,6 +153,7 @@ No third-party imports: this runs wherever python3 and git do.
 from __future__ import annotations
 
 import argparse
+import collections
 import fnmatch
 import hashlib
 import importlib.util
@@ -479,6 +489,31 @@ def census_findings(root: str, base: str, census: list[str]) -> list[str]:
     return out
 
 
+def staged_copy_findings(root: str, pairs: list[str], allow: int) -> list[str]:
+    """LRN-0174: `REL=STAGED` pairs; staged lines absent from the returned file, past `allow`."""
+    out: list[str] = []
+    for pair in pairs:
+        rel, _, staged = pair.partition("=")
+        try:
+            with open(staged, encoding="utf-8", errors="replace") as fh:
+                old = fh.read().splitlines()
+            with open(os.path.join(root, rel), encoding="utf-8", errors="replace") as fh:
+                new = fh.read().splitlines()
+        except OSError as err:
+            out.append(f"staged-delta: {rel} or its staged copy cannot be read ({err.strerror})")
+            continue
+        left = collections.Counter(old) - collections.Counter(new)
+        lost: list[str] = []
+        for line in old:
+            if left[line] > 0:
+                lost.append(line)
+                left[line] -= 1
+        if len(lost) > allow:
+            shown = "; ".join(repr(line.strip()[:50]) for line in lost[:3])
+            out.append(f"staged-delta: {rel} lost {len(lost)} staged line(s) (sanctioned {allow}): {shown}")
+    return out
+
+
 def verify(args: argparse.Namespace) -> tuple[list[str], list[str], list[str]]:
     """(report lines, flags, the pieces of the RETURNED line)."""
     root = os.path.abspath(args.root)
@@ -591,6 +626,14 @@ def verify(args: argparse.Namespace) -> tuple[list[str], list[str], list[str]]:
         if problems:
             flags.append("census")
             parts.append("CENSUS: " + problems[0])
+
+    staged = [p for p in (getattr(args, "staged_copy", "") or "").split(",") if p]
+    if staged:
+        problems = staged_copy_findings(root, staged, getattr(args, "staged_allow", 0) or 0)
+        out.append("STAGED-COPY: " + ("; ".join(problems[:3]) if problems else f"{len(staged)} rewrite(s) keep every staged line"))
+        if problems:
+            flags.append("staged-delta")
+            parts.append("STAGED-COPY: " + problems[0])
 
     report_text: str | None = None
     if args.report:
@@ -751,6 +794,11 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--owned", default="", help="comma list of the files/dirs/globs the agent owns")
     ap.add_argument("--census-paths", default="",
                     help="comma list of the census paths a CENSUS payload names: the agent's edit scope, checked for in-place edits")
+    ap.add_argument("--staged-copy", default="",
+                    help="comma list of REL=STAGED pairs: an existing test script the author rewrote whole, "
+                         "compared with the staged copy it was handed (staged lines lost = staged-delta)")
+    ap.add_argument("--staged-allow", type=int, default=0,
+                    help="with --staged-copy: how many staged lines the payload sanctioned the author to change or remove")
     ap.add_argument("--shared-tree", default="",
                     help="comma list of the sibling authors' paths in the same worktree, "
                          "judged by their own verification, never this one's")
@@ -1252,6 +1300,22 @@ def selftest() -> int:
             rc, out = call(["--root", root, "--branch", git(root, "rev-parse", "--abbrev-ref", "HEAD")[1], "--base", cbase,
                             "--uncommitted", "--census-paths", "tests/census/test_missing.py"])
             check("#392 a census path that is not in the base tree is flagged", rc == 1 and "census-path" in out)
+
+            # --- LRN-0174: a whole-file rewrite is diffed against the staged copy before any suite run ---
+            staged_path = os.path.join(tmp, "staged_suite.sh")
+            put(root, "tests/census/test_pin.py", census_body.replace("check 3\n", "check 3\ncheck 3b\n"))
+            with open(staged_path, "w", encoding="utf-8") as fh:
+                fh.write(census_body)
+            sargs = ["--root", root, "--branch", git(root, "rev-parse", "--abbrev-ref", "HEAD")[1], "--base", cbase,
+                     "--uncommitted", "--owned", "tests/census/test_pin.py", "--staged-copy", "tests/census/test_pin.py=" + staged_path]
+            rc, out = call(sargs)
+            check("LRN-0174: a rewrite that only adds lines keeps every staged line", rc == 0 and "STAGED-COPY: 1 rewrite" in out)
+            put(root, "tests/census/test_pin.py", census_body.replace("check 3\n", "check  3\n"))
+            rc, out = call(sargs)
+            check("LRN-0174: a corrupted preserved line is flagged staged-delta", rc == 1 and "staged-delta" in out.splitlines()[0] and "check 3" in out)
+            rc, out = call(sargs + ["--staged-allow", "1"])
+            check("LRN-0174: a sanctioned edit within the allowance is clean", rc == 0 and "STAGED-COPY: 1 rewrite" in out)
+            git(root, "checkout", "-q", "--", "tests/census")
 
             # --- unusable input ---
             git(root, "checkout", "-q", "feat/empty")

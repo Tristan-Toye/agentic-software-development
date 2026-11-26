@@ -767,6 +767,9 @@ REVIEW_RULE_SEVERITY = {
     "approach-rejected": "error",
 }
 REVIEW_RULE_STATUSES = ("planned", "ready")
+# `approach-rejected` is an error only for a dossier created on or after this date (the day the rule landed); an
+# older planned/ready dossier gets it as a warning, so the rule never blocks a dossier planned before it existed.
+APPROACH_REJECTED_SINCE = "2026-11-27"
 
 PATH_TOKEN_RE = re.compile(
     r"(?<![\w/.:-])((?:[\w.-]+/)+[\w.-]+\.(?:rs|py|cs|ts|tsx|js|go|java|kt|toml|ya?ml|json|md|sql|sh|tf|proto|csproj|sln))\b"
@@ -942,12 +945,16 @@ def approach_has_rejected(approach: str) -> bool:
     return bool(REJECTED_RE.search(approach)) or bool(re.search(r"\brejects?\s+(?:three|two|four|\d+)\b|\bwas\s+rejected\b|\brejected\b", approach, re.I))
 
 
-def check_approach(where: str, approach: str, rep: Report) -> None:
-    """`## Approach` names at least one rejected alternative (the dossier.md template's row 2)."""
+def check_approach(where: str, approach: str, rep: Report, created: str = "") -> None:
+    """`## Approach` names at least one rejected alternative (the dossier.md template's row 2). A dossier created
+    before APPROACH_REJECTED_SINCE (or with no `created:` date) gets the finding as a warning, not a defect."""
     if not approach_has_rejected(approach):
-        _review_emit(rep, "approach-rejected", where,
-                     "## Approach names no rejected alternative; add a 'Rejected options' line with each option "
-                     "not taken and why")
+        msg = ("## Approach names no rejected alternative; add a 'Rejected options' line with each option "
+               "not taken and why")
+        if str(created) >= APPROACH_REJECTED_SINCE:
+            _review_emit(rep, "approach-rejected", where, msg)
+        else:
+            rep.warn(where, f"[approach-rejected] {msg} (a warning: the dossier predates the rule)")
 
 
 
@@ -1541,7 +1548,7 @@ def validate_dossier(path: Path, repo_root: Path) -> Report:
                 "promote it to FACT, or move it to a stated risk",
             )
         if review_rules:
-            check_approach(f"{where} ## Approach", sec["## Approach"], rep)
+            check_approach(f"{where} ## Approach", sec["## Approach"], rep, str(fm.get("created") or ""))
     if "## Contract" in sec:
         check_contract(f"{where} ## Contract", sec["## Contract"], rep)
         if review_rules:
@@ -3147,6 +3154,11 @@ def selftest_review_rules() -> bool:
         fn("w", *a, r)
         return r
 
+    def _appr(text: str, created: str) -> Report:
+        r = Report()
+        check_approach("w", text, r, created)
+        return r
+
     def vague_run(item: str, review: bool) -> Report:
         r = Report()
         check_criteria("w", item, r, False, review)
@@ -3190,7 +3202,8 @@ def selftest_review_rules() -> bool:
         ("an owner annotation outside every package", len(rep_of(check_contract_covers_paths, "```x\n```\n", crit_bad,
                                                                     rows).defects) == 1),
         ("an approach with a rejected option passes", not rep_of(check_approach, "Use a lock.\n\nRejected: a queue.").defects),
-        ("an approach with no rejected option is refused", len(rep_of(check_approach, "Use a lock. It is simple.").defects) == 1),
+        ("an approach with no rejected option is refused", len(_appr("Use a lock. It is simple.", APPROACH_REJECTED_SINCE).defects) == 1),
+        ("an older dossier with no rejected option only warns", not _appr("Use a lock. It is simple.", "2026-11-20").defects),
         ("every rule applies only to a not-yet-done dossier", "done" not in REVIEW_RULE_STATUSES),
         ("'by construction' with no value is vague for a ready dossier",
          len(vague_run("1. The cache is right by construction. (owner: tests/a.py; env: CI)", True).defects) == 1),
@@ -3202,7 +3215,8 @@ def selftest_review_rules() -> bool:
     # end to end: a ready dossier with no rejected option fails, the same text as `done` is not re-linted
     no_alt = GOOD_DOSSIER.replace(
         "Rejected options: one lock per caller, which still writes one item two times. "
-        "A queue per thread, which loses the oldest-first order.\n\n", "")
+        "A queue per thread, which loses the oldest-first order.\n\n", "").replace(
+        "created: 2026-08-10", "created: " + APPROACH_REJECTED_SINCE, 1)
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
         (root / "src").mkdir()
@@ -3213,10 +3227,14 @@ def selftest_review_rules() -> bool:
         ready = validate_dossier(dd / "W-014-flush.md", root)
         (dd / "W-014-flush.md").write_text(no_alt.replace("status: ready", "status: done"))
         done = validate_dossier(dd / "W-014-flush.md", root)
+        (dd / "W-014-flush.md").write_text(re.sub(r"^created: .*$", "created: 2026-11-20", no_alt, count=1, flags=re.M))
+        old_ready = validate_dossier(dd / "W-014-flush.md", root)
         (dd / "W-014-flush.md").write_text(GOOD_DOSSIER)
         good = validate_dossier(dd / "W-014-flush.md", root)
     cases += [
         ("a ready dossier with no rejected option fails validation", any("approach-rejected" in x for x in ready.defects)),
+        ("a dossier created before the rule only warns", not any("approach-rejected" in x for x in old_ready.defects)
+         and any("approach-rejected" in x for x in old_ready.warnings)),
         ("the same dossier as done is not re-linted", not any("approach-rejected" in x for x in done.defects)),
         ("the reference dossier stays clean of the review rules", not [x for x in good.defects + good.warnings
                                                                         if any(r in x for r in REVIEW_RULE_SEVERITY)]),

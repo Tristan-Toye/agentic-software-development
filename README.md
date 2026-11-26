@@ -292,6 +292,12 @@ gets the same two stops from this plugin:
   denied with a reason the model reads, and any different call resets the
   count. `ASD_REPEAT_GUARD_LIMIT` sets the allowed run (default 3; 0 turns it
   off). The hook fails open — bad input or state allows the call.
+- **A fixer guard.** `hooks/hooks.json` runs `scripts/hooks/fixer_guard.py`
+  before every Bash call: a `typos --write-changes`, `taplo fmt` or `--fix`
+  run that NAMES a path under `.discovery/` is denied (the `_typos.toml`
+  exclusion guards traversal only, so a named record is corrupted anyway)
+  unless it passes `--force-exclude`. `ASD_FIXER_GUARD=0` turns it off; it
+  fails open.
 
 - **A hard block for the owner's agent.** `hooks/hooks.json` runs
   `shared/claude/hard-block.ts` before file tools and Bash. It does nothing
@@ -301,6 +307,19 @@ gets the same two stops from this plugin:
   refuses merging a PR, force and protected-branch pushes, and secret paths;
   see `references/dm-agent.md`. Runner sessions are unaffected. It fails
   open on input it cannot parse, and logs that.
+
+- **A no-polling guard.** `hooks/hooks.json` runs `shared/claude/no-poll.ts`
+  before Bash. In a sub-agent listed in `no_poll_agents` of
+  `shared/context-guard.yaml` (default `implementer`, `stub-materialiser`;
+  the plugin prefix is optional) it refuses `run_in_background`, a `sleep` in a
+  `while`/`until`/`for` loop or a bare `sleep` above `no_poll_sleep_max`
+  seconds (default 5), `watch`, `tail -f`, a trailing `&`, and a
+  `while`/`until` loop that re-checks a process, file or log; the message
+  points at one foreground call or the blocking `run_tests.py --wait`. Ordinary
+  foreground commands and `timeout` wrappers pass; the orchestrator, the main
+  session and other agents are never checked (the hook input has no `agent_id`
+  there). `ASD_NO_POLL=0` turns it off. The opencode plugin applies the same
+  rules (`shared/no-poll.ts`). It fails open.
 
 ### Spawns the auto mode classifier can judge
 
@@ -322,7 +341,8 @@ passed on another try. So under Claude Code the payload is pasted:
 - **The check.** `hooks/hooks.json` runs `scripts/hooks/spawn_guard.py`
   before every `Agent` call to one of this plugin's agents and denies, with
   the fix as the reason, a pointer prompt (a payload file named and no
-  `FIELD:` line of its own), a path in a Claude Code scratchpad, or a
+  `FIELD:` line of its own), a path in a Claude Code scratchpad, an
+  unexpanded `@@TOKEN@@`, a `--no-verify` instruction, or a
   secret-shaped value. It never allows anything — what it lets through still
   goes to the classifier. Replayed over the 127 recorded spawns it refuses 20
   of the 22 the classifier denied; the other 2 were pasted payloads.
@@ -333,6 +353,12 @@ passed on another try. So under Claude Code the payload is pasted:
   design gives it the context the prompt cannot.
 
 opencode has no classifier and keeps spawning by the file.
+
+## Trust report
+
+`scripts/trust_report.py --root <repo>` measures how far the dossier PRs the agents built can be trusted once they merged. For every PR merged into a `stub/*` branch it counts (a) the stub fixes `/stub` attributed to the dossier (the `fix/<ID>-stub<date>-<round>` PRs, and attributions written in the stub's record), (b) reverts of its commits, plus later fix commits that removed the same lines within 14 days (a heuristic, labelled as one), and (c) bug-kind deferred items that say they were found after the merge. Each dossier gets a score and an ok, watch or FLAG; the output is Markdown per stub with totals and a trend, or JSON with `--json`. It only reads the checkout (`git log`, `gh pr list`).
+
+Run it after each stub lands, once the stub PR is merged. Every run writes `~/.agentic/trust-report/<repo>.json`, and the repo page of the dashboard shows "Trust report: last run N days ago" with the flagged count, in alarm style when the last run is older than 14 days or there is none.
 
 ## Token spend
 
@@ -465,6 +491,7 @@ are in `ledger/token-spend.md`; `scripts/token_report.py` produces the numbers.
 | `scripts/setup_claude_account.sh` | Adds a second Claude login in its own `CLAUDE_CONFIG_DIR` (settings, plugins and hooks shared by symlink) and registers it in `~/.agentic/accounts.json`, so the runner switches accounts when one hits its usage limit. |
 | `scripts/install_questions_agent.sh` | Installs or removes (`--uninstall`) the `dev.tristan.asd-questions` LaunchAgent that runs `shared/questions/server.ts`; needs `--slack-user U…`, `--dry-run` prints the plist. |
 | `scripts/token_report.py` | Where an opencode setup spends its tokens in a time window: per agent, per orchestrator run, carried context by kind, tool adoption and bypasses, plugin events. `--json` snapshots and `--compare` diffs them; the evidence behind `ledger/token-spend.md`. `--selftest` checks the checker. |
+| `scripts/trust_report.py` | How far a dossier PR can be trusted after it merged into a weekly stub: per stub and dossier, the fixes `/stub` attributed to it, the reverts (explicit, plus a labelled same-lines fix-up heuristic) and the bugs found after the merge, with a score, totals and a trend. Writes `~/.agentic/trust-report/<repo>.json`, which the dashboard shows as "Trust report: last run N days ago". Run it after each stub lands. `--selftest` checks the checker. |
 | `scripts/build_claude_plugin.py` | The Claude Code surface, derived from the opencode sources. `--check` fails on drift; `--selftest` checks the checker. |
 
 ## Why the validator matters more than it looks

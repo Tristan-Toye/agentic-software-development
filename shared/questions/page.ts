@@ -831,7 +831,7 @@ function vrBuild(host, key, data) {
 }
 
 // ---- state ----
-const S = { sweep: {}, dm: { list: [], conv: null, enabled: true, busy: false, err: '' }, q: [], runs: [], accounts: [], usageBusy: false, slack: false, scannedAt: '', stubs: { repos: [], openWork: [] }, loaded: false, detail: null, live: false, changedAt: 0, showAll: {}, ctl: {}, pend: {}, qerr: {}, tab: {}, po: {}, fb: {}, fbBusy: null, fbErr: null, rulings: {}, frameH: {}, dsel: {}, chat: {}, docPrs: {}, auto: {}, flows: {} };
+const S = { sweep: {}, trust: {}, dm: { list: [], conv: null, enabled: true, busy: false, err: '' }, q: [], runs: [], accounts: [], usageBusy: false, slack: false, scannedAt: '', stubs: { repos: [], openWork: [] }, loaded: false, detail: null, live: false, changedAt: 0, showAll: {}, ctl: {}, pend: {}, qerr: {}, tab: {}, po: {}, fb: {}, fbBusy: null, fbErr: null, rulings: {}, frameH: {}, dsel: {}, chat: {}, docPrs: {}, auto: {}, flows: {} };
 let R = { kind: 'home' };
 let routeSig = '';
 let scrollTarget = '';
@@ -1410,6 +1410,12 @@ function sweepView(repo) {
   const txt = v.lastRun === null ? 'Pattern sweep: never run' : 'Pattern sweep: last run ' + (v.days === 0 ? 'today' : v.days + (v.days === 1 ? ' day ago' : ' days ago')) + (v.items === null ? '' : ' (' + v.items + (v.items === 1 ? ' item)' : ' items)'));
   return h('section', { class: 'sec', 'data-k': 'sec:sweep' }, [h('div', { class: 'sechd' }, [h('h2', {}, ['Pattern sweep']), h('span', { class: 'small ' + (v.stale ? 'err' : 'mut'), title: v.summary || 'Run /pattern-sweep in an interactive session of this repo.' }, [txt])])]);
 }
+/* Trust report alarm: how long ago scripts/trust_report.py last ran for this repository (GET /api/trust-report), alarm style when older than 14 days or never run. */
+function trustView(repo) {
+  const v = S.trust[repo]; if (!v) return null;
+  const msg = v.daysAgo === null ? 'Trust report: never run' : 'Trust report: last run ' + v.daysAgo + ' day' + (v.daysAgo === 1 ? '' : 's') + ' ago';
+  return h('section', { class: 'sec', 'data-k': 'sec:trust' }, [h('div', { class: 'sechd' }, [h('h2', { class: v.alarm ? 'err' : null }, [msg]), h('span', { class: 'small mut' }, [v.flagged + ' flagged dossier' + (v.flagged === 1 ? '' : 's')]), h('span', { class: 'grow' }), h('span', { class: 'small mut' }, [v.alarm ? 'Run trust_report.py after each stub lands' : 'Up to date'])])]);
+}
 function repoView(repo) {
   const rs = S.runs.filter(r => r.repo === repo); const prog = rs.filter(inProgress); const os = openStubs(repo);
   const ow = (S.stubs.openWork || []).find(o => o.repo === repo); const oq = S.q.filter(q => q.state === 'open' && qRepo(q) === repo).sort((a, b) => a.ts.localeCompare(b.ts));
@@ -1424,6 +1430,7 @@ function repoView(repo) {
   kids.push(sideColumn(repo));
   const aw = autoWorkView(repo); if (aw) kids.push(aw);
   const fv = flowsView(repo); if (fv) kids.push(fv);
+  const tv = trustView(repo); if (tv) kids.push(tv);
   const dp = docPrsView(repo); if (dp) kids.push(dp);
   const rl = rulingsView(repo); if (rl) kids.push(rl);
   const sw = sweepView(repo); if (sw) kids.push(sw);
@@ -1965,6 +1972,7 @@ async function load(what) {
   if (all || w.has('runs') || w.has('scan')) jobs.push(fetchJ('/api/runs').then(d => { if (d && d.pageId) { if (S.pageId && S.pageId !== d.pageId) { location.reload(); return; } S.pageId = d.pageId; } if (d && d.runs) { S.runs = d.runs; S.slack = d.slack; S.scannedAt = d.scannedAt; S.refreshing = !!d.refreshing; S.accounts = d.accounts || []; S.disk = d.disk || null; S.dirtyMain = d.dirtyMain || []; S.plans = d.plans || []; S.usageBusy = !!d.usageBusy; if (!S.loaded) { S.ready = true; render(); } } }));
   if (all || w.has('stubs') || w.has('scan')) jobs.push(fetchJ('/api/stubs').then(d => { if (d && d.repos) S.stubs = d; }));
   if (all || w.has('runs') || w.has('scan')) jobs.push(fetchJ('/api/autowork').then(d => { if (d && d.repos) { S.auto = {}; d.repos.forEach(v => { S.auto[v.repo] = v; }); } }));
+  if (all || w.has('runs') || w.has('scan')) jobs.push(fetchJ('/api/trust-report').then(d => { if (d && d.repos) { S.trust = {}; d.repos.forEach(v => { S.trust[v.repo] = v; }); } }));
   if (all || w.has('runs') || w.has('scan')) jobs.push(fetchJ('/api/delivery-flows').then(d => { if (d && d.repos) { S.flows = {}; d.repos.forEach(v => { S.flows[v.repo] = v; }); } }));
   // The non-code PR list is fetched once per repo; reload it when the server says it changed (or any run changed) while it is on screen.
   if ((all || w.has('docprs') || w.has('runs')) && R.kind === 'repo') { const st = S.docPrs[R.repo]; if (st && !st.loading) jobs.push(fetch('/api/repo/' + enc(R.repo) + '/doc-prs').then(r => r.json()).then(j => { if (!S.docPrs[R.repo] || !S.docPrs[R.repo].merging || j.merging) S.docPrs[R.repo] = j; }).catch(() => {})); }

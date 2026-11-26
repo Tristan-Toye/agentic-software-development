@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Lint a spawn payload before it reaches an agent.
 
-Twelve failure modes this catches, each of which cost a real build:
+Nineteen failure modes this catches, each of which cost a real build:
 
 1. **A misnamed or missing field.** `references/payloads/README.md` names a misnamed
    field the likeliest silent failure in the pipeline: an agent halts on a
@@ -170,6 +170,18 @@ Twelve failure modes this catches, each of which cost a real build:
     `TARGET_PATHS` needs `Write`, a `blast-radius-scout` needs `Bash` (REQUIRED_TOOLS
     below). Without it the deliverable comes back verbatim and the
     orchestrator lands bytes the agent never self-checked.
+
+17. **A commit that skips the hook, named in a payload** (LRN-0088). `--no-verify`
+    or `git commit -n` outside a line that forbids it: only the orchestrator
+    skips the pre-commit hook (the Phase 2 contract commit).
+
+18. **A one-crate `BUILD_CHECK` on a stub-materialiser** (LRN-0032). `cargo check
+    -p <crate>` without `--workspace`: a shared type is constructed in tests
+    that check never visits, and the contract commit is every fork's base.
+
+19. **An integration excerpt that carries the `## Build log`** (LRN-0023). A
+    `DOSSIER` file that exists and holds the heading has leaked the run's
+    rulings, whatever its path: one Read returns the whole file.
 
 Verbatim prose is exempt from two heuristics. Fields that paste text the
 orchestrator did not write (VERBATIM_FIELDS: `CRITERIA`, `CONTRACT`, the
@@ -1773,6 +1785,61 @@ def sentinel_findings(path: str) -> list[str]:
                 "edited after sealing or sealed under another name; %s." % (label, want, how)]
     return []
 
+# LRN-0088: a commit that skips the hook is the orchestrator's; no payload or resume message carries it.
+NO_VERIFY = re.compile(r"--no-verify\b|\bgit\s+commit\b[^\n`]*\s-[a-zA-Z]*n\b")
+NEGATED = re.compile(r"\b(never|not|don't|do not|no|without)\b", re.IGNORECASE)
+
+
+def no_verify_findings(lines: list[str]) -> list[str]:
+    """LRN-0088: a sub-agent's permission decisions are made in its own session, so a payload
+    that says to skip the commit hook is refused there, or obeyed where it should not be. Only the
+    orchestrator skips the hook (the Phase 2 contract commit); a line that forbids it passes."""
+    out: list[str] = []
+    for number, line in enumerate(lines, 1):
+        found = NO_VERIFY.search(line)
+        if found and not NEGATED.search(line[:found.start()]):
+            out.append("line %d names a commit that skips the hook (%r): only the orchestrator skips the "
+                       "pre-commit hook, never a payload or resume message; delete the line (LRN-0088)."
+                       % (number, found.group(0)[:30]))
+    return out
+
+
+# LRN-0032: the stub-materialiser's BUILD_CHECK gates the contract commit every implementer forks from.
+SINGLE_CRATE = re.compile(r"\bcargo\b[^\n]*\s(?:-p|--package)[\s=]")
+WORKSPACE_FORM = re.compile(r"--workspace|--all\b")
+
+
+def build_check_findings(lines: list[str], kind: str | None) -> list[str]:
+    """LRN-0032: `cargo check -p <crate>` proves one package; a shared type is constructed in
+    distant tests that check never visits, and the contract commit is the base of every fork."""
+    if kind != "stub-materialiser":
+        return []
+    command = field_command(lines, "BUILD_CHECK")[1]
+    if SINGLE_CRATE.search(command) and not WORKSPACE_FORM.search(command):
+        return ["BUILD_CHECK %r checks one crate: a shared type is constructed in tests this check never "
+                "visits. Use the workspace form (cargo check --workspace --all-targets --locked) before "
+                "the contract commit (LRN-0032)." % command[:80]]
+    return []
+
+
+# LRN-0023: an excerpt that carries the live dossier's `## Build log` is not blind, whatever its path.
+def excerpt_leak_findings(lines: list[str], kind: str | None) -> list[str]:
+    """LRN-0023: the Build log accumulates rulings and workarounds during the run; one Read returns
+    the whole file, so a DOSSIER that holds the heading has leaked it. Extract the permitted sections."""
+    if kind != "integration-test-author":
+        return []
+    path = field_value(lines, "DOSSIER")
+    try:
+        with open(path, encoding="utf-8") as handle:
+            text = handle.read()
+    except OSError:
+        return []
+    if re.search(r"^##\s+Build log\b", text, re.M):
+        return ["DOSSIER %s carries a `## Build log` section: the author can read the run's rulings and "
+                "workarounds. Write only `## Problem`, `## Approach` and `## Acceptance criteria` to the "
+                "excerpt (LRN-0023)." % path]
+    return []
+
 
 def lint(lines: list[str], kind: str | None, worktree: str | None,
          allow_paths: list[str], host: str | None = None,
@@ -1954,6 +2021,9 @@ def lint(lines: list[str], kind: str | None, worktree: str | None,
 
     # 5. a command verb that contradicts the script's shebang
     defects.extend(verb_findings(lines, worktree))
+    defects.extend(build_check_findings(lines, kind))
+    defects.extend(no_verify_findings(lines))
+    defects.extend(excerpt_leak_findings(lines, kind))
 
     # 7. a checklist surface the author's world does not carry
     defects.extend(surface_findings(lines, kind, worktree))
@@ -2878,6 +2948,27 @@ def _selftest_cases() -> int:
     case("#433: the refusal names the split by test file", big.replace(
         "TEST_PATHS: {REAL}/tests/unit/test_flush.py\n", two), "unit-test-author", True, "harness file first", host="opencode")
     case("#433: 20 checklist lines pass the gate", small, "unit-test-author", False, host="opencode")
+
+    # --- LRN-0088, LRN-0032, LRN-0023: orchestrator-only hook skip, workspace contract check, excerpt leak ---
+    case("LRN-0088: a payload that tells the agent to skip the hook is refused",
+         impl.replace("HOOKS: none\n", "HOOKS: |\n  commit with git commit --no-verify when clippy fails\n"), "implementer", True, "--no-verify")
+    case("LRN-0088: git commit -n is the same skip",
+         impl.replace("HOOKS: none\n", "HOOKS: |\n  run git commit -n -m x\n"), "implementer", True, "skips the hook")
+    case("LRN-0088: a line that forbids the skip passes",
+         impl.replace("HOOKS: none\n", "HOOKS: |\n  never use --no-verify here\n"), "implementer", False)
+    stub = ("WORKTREE_DIR: {REAL}\nCONTRACT: |\n  fn a()\nOWNED_PATHS: src/flush.py\n"
+            "STUB_STYLE: |\n  unimplemented!()\nBUILD_CHECK: cargo check --locked\n")
+    case("LRN-0032: a workspace-wide BUILD_CHECK passes",
+         stub.replace("cargo check --locked", "cargo check --workspace --all-targets --locked -p core"), "stub-materialiser", False)
+    case("LRN-0032: a one-crate BUILD_CHECK is refused",
+         stub.replace("cargo check --locked", "cargo check -p core"), "stub-materialiser", True, "one crate")
+    case("LRN-0032: a repo-default check with no -p passes", stub, "stub-materialiser", False)
+    leak_repo = {".agent-staging/W-014.leak.md": "## Problem\nq\n\n## Build log\n- ruling: use X\n"}
+    case("LRN-0023: an excerpt that carries the Build log is refused",
+         integ.replace("W-014.excerpt.md", "W-014.leak.md"), "integration-test-author", True, "Build log",
+         host="claude", tools=rw, repo_files=leak_repo)
+    case("LRN-0023: a clean excerpt passes", integ, "integration-test-author", False, host="claude", tools=rw,
+         repo_files=leak_repo)
 
     # --- #460, #465: every kind ends in a matching PAYLOAD-END sentinel ---
     def seal_for(path: str, body: str) -> str:

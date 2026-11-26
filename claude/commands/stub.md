@@ -407,6 +407,9 @@ the number of fix rounds and what each fixed; the map refresh (pull request merg
 merge into `development`, which is never yours. Then close the time-logging
 session, if one was opened.
 
+Recommend, in the report and never as a step you run: once the stub is merged, the user runs
+`scripts/trust_report.py --root <repo>` to see how far this stub's dossiers can be trusted.
+
 End the pull request body with this block, every line at the start of its own
 line, written last and true of the head it names. `land_stub.py` reads it; with
 no block, or any other value, the pull request waits for the user:

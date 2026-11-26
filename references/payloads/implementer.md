@@ -189,6 +189,10 @@ job.
 - **`TEST_COMMAND` emits progress inside the runtime's no-progress window,
   in a build directory that worktree owns**; a cold cross-platform or
   virtual-machine compile never appears in a payload (`work-on.md` Phase 4).
+- **The implementer never polls.** Compile, lint and its own package's tests run in the
+  foreground; a long run is waited on with the blocking `--wait` of `run_tests.py` /
+  `run_gates.py`. The no-polling hook (`shared/claude/no-poll.ts`) refuses
+  `run_in_background`, a `sleep` loop, `watch` and `tail -f` in the agent's Bash.
 - **`COMMIT_ENV` carries the hook's toolchain `PATH` (#458).** When the hook
   runs toolchain binaries (`cargo fmt`, `cargo clippy --fix`) and the agent's
   shell lacks them, every commit is refused with exit 127. The lines in

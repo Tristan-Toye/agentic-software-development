@@ -20,6 +20,7 @@ import { readAccounts } from "../questions/accounts.ts"
 import { execFileSync } from "node:child_process"
 import { planningRuns, planningRunsAsync } from "../questions/planning.ts"
 import { flowsOf, flowViews, setFlow } from "../questions/deliveryflows.ts"
+import { trustOf } from "../questions/trustreport.ts"
 import { argvFor, autoWorkOn, buildFacts, eagerMergeOn, factsOn, markMerged, readAutoState, viewsFor } from "../questions/autowork.ts"
 
 let failed = 0
@@ -1197,6 +1198,16 @@ try {
   writeFileSync(fl, "{torn")
   check("flows: an unreadable file reads as the defaults and is never overwritten", flowsOf("r").stub && !setFlow("r", "kanban", true).ok && readFileSync(fl, "utf8") === "{torn")
   if (prev === undefined) delete process.env.ASD_DELIVERY_FLOWS; else process.env.ASD_DELIVERY_FLOWS = prev
+  {
+    const td = mkdtempSync(join(tmpdir(), "trust-")), now = Date.parse("2026-11-26T12:00:00Z")
+    writeFileSync(join(td, "r.json"), JSON.stringify({ last_run: "2026-11-20T12:00:00Z", stubs: 3, prs: 40, flagged: 5 }))
+    writeFileSync(join(td, "old.json"), JSON.stringify({ last_run: "2026-11-01T00:00:00Z", stubs: 1, prs: 2, flagged: 0 }))
+    writeFileSync(join(td, "torn.json"), "{torn")
+    const t = trustOf("r", now, td), o = trustOf("old", now, td)
+    check("trust: a recent run shows its age and flagged count, no alarm", t.daysAgo === 6 && t.flagged === 5 && !t.alarm)
+    check("trust: older than 14 days alarms; never run and unreadable alarm", o.alarm && o.daysAgo === 25 && trustOf("none", now, td).alarm && trustOf("none", now, td).daysAgo === null && trustOf("torn", now, td).alarm)
+    rmSync(td, { recursive: true, force: true })
+  }
   rmSync(dir, { recursive: true, force: true })
 }
 console.log(failed ? `FAIL (${failed})` : "PASS (all cases)")
