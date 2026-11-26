@@ -8,6 +8,7 @@ Four commands, four agents, two file kinds.
 /overview-dossiers     →  what is going on
 /deferred              →  what the run noticed and did not tackle
 /fix-deferred          →  fix those in one stacked PR, or seed a dossier
+/pattern-sweep         →  bad habits that are spreading, as /plan proposals (interactive only)
 ```
 
 ## The idea
@@ -67,6 +68,7 @@ whichever side is easier to change.
 | **`/overview-dossiers`** | Status of every dossier from front matter alone, plus the pipeline health signals worth acting on. Read-only toward pipeline state; also renders `.discovery/analysis/open-work.html`, a self-contained page the pipeline dashboard embeds and refreshes; `--worktrees` overlays the live copies from sibling worktrees when `.discovery/` is committed. | 0 |
 | **`/deferred`** | The deferred-issues report for a finished change: every product-code issue the session knew about and did not tackle, with an ID, evidence and a proposed fix. Recall, not audit; `/plan D-n` seeds a dossier from a line. | 0 |
 | **`/fix-deferred <ID>`** | Fixes a finished dossier's deferred issues in one stacked PR: direct, test-first fixes through the implementer and reviewer flow for items that stay inside one package and carry no contract change, a `/plan <ID> D-n` seed for every item that deserves its own dossier. Started from the dashboard's "Fix all deferred" button or `work-on <ID> --command fix-deferred`. |
+| **`/pattern-sweep [repo]`** | Interactive only (refuses in a runner or headless session). Sweeps one repository for bad habits agents copy (swallowed errors, `unwrap` in production paths, sleeps in tests, copied helpers, magic numbers, TODO clusters, duplicated config parsing, mixed error types, dead flags, long files, drift), counts occurrences, spread and recency, and prints a ranked list of proposed `/plan` items with evidence, fix shape and size. Never starts `/plan`. Records the run; the dashboard's repo page shows when it last ran (alarm when never or over 30 days). Skill: `skills/pattern-sweep/`. | 0 |
 
 ## The agents
 
@@ -421,6 +423,8 @@ are in `ledger/token-spend.md`; `scripts/token_report.py` produces the numbers.
 | `references/payloads/` | One spawn skeleton per agent, and the field rules that matter. Read `README.md` first. |
 | `references/work-on/` | `/work-on`'s instructions, one file per phase. `primary-agents/work-on.md` holds what is true in every phase and points at each file; the orchestrator reads a phase file when the phase starts. |
 | `references/time-logging.md` | The Tempo contract: one session per run, orchestrator only. |
+| `skills/pattern-sweep/` | The `/pattern-sweep` skill: the interactive bad-habit sweep and its recommendation format. |
+| `scripts/pattern_sweep.py` | `/pattern-sweep`'s helper: `scan --root R` (read-only regex counts per language: patterns, spread, recent files, long files, copied blocks, as JSON), `record --root R --items N` (writes `$ASD_AGENTIC_DIR` or `~/.agentic`, `pattern-sweep/<repo>.json`: `last_run`, `items`, `summary`; the dashboard's repo page reads it through `GET /api/pattern-sweep/<repo>`). `--selftest` uses temp dirs only. |
 | `skills/standards/` | The engineering standards. They bind generation and review symmetrically. |
 | `scripts/validate_pipeline.py` | Front matter, section set, **path disjointness**, contract shape, criterion falsifiability, anchors, ASD-STE100, and two dossiers sharing one ID. `--mode` settles which of the two `.discovery/` modes a checkout is in; `--finalize-ids` renumbers the ADRs, LRNs and dossiers a concurrent branch landed first. `--selftest` checks the checker. |
 | `scripts/claim_id.py` | Claims the next dossier (`--kind W`) or ADR (`--kind ADR`) number from the repository's central ID ledger: branch `asd/ids` on the remote, one line per claim, appended by a push without force, so a concurrent claim is rejected and retries with the next number. The next number is above the ledger and every number in any remote branch's tree (open plan PRs included). Never touches the working tree. `--peek` claims nothing. `--selftest` checks the claimer. |

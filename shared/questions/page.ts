@@ -831,7 +831,7 @@ function vrBuild(host, key, data) {
 }
 
 // ---- state ----
-const S = { dm: { list: [], conv: null, enabled: true, busy: false, err: '' }, q: [], runs: [], accounts: [], usageBusy: false, slack: false, scannedAt: '', stubs: { repos: [], openWork: [] }, loaded: false, detail: null, live: false, changedAt: 0, showAll: {}, ctl: {}, pend: {}, qerr: {}, tab: {}, po: {}, fb: {}, fbBusy: null, fbErr: null, rulings: {}, frameH: {}, dsel: {}, chat: {}, docPrs: {}, auto: {}, flows: {} };
+const S = { sweep: {}, dm: { list: [], conv: null, enabled: true, busy: false, err: '' }, q: [], runs: [], accounts: [], usageBusy: false, slack: false, scannedAt: '', stubs: { repos: [], openWork: [] }, loaded: false, detail: null, live: false, changedAt: 0, showAll: {}, ctl: {}, pend: {}, qerr: {}, tab: {}, po: {}, fb: {}, fbBusy: null, fbErr: null, rulings: {}, frameH: {}, dsel: {}, chat: {}, docPrs: {}, auto: {}, flows: {} };
 let R = { kind: 'home' };
 let routeSig = '';
 let scrollTarget = '';
@@ -1404,6 +1404,12 @@ async function flowsAct(btn) {
   const d = await fetchJ('/api/delivery-flows'); if (d && d.repos) { S.flows = {}; d.repos.forEach(v => { S.flows[v.repo] = v; }); }
   render();
 }
+/* Pattern sweep: when /pattern-sweep last ran for this repo (an alarm when never run or older than 30 days). */
+function sweepView(repo) {
+  const v = S.sweep[repo]; if (!v) return null;
+  const txt = v.lastRun === null ? 'Pattern sweep: never run' : 'Pattern sweep: last run ' + (v.days === 0 ? 'today' : v.days + (v.days === 1 ? ' day ago' : ' days ago')) + (v.items === null ? '' : ' (' + v.items + (v.items === 1 ? ' item)' : ' items)'));
+  return h('section', { class: 'sec', 'data-k': 'sec:sweep' }, [h('div', { class: 'sechd' }, [h('h2', {}, ['Pattern sweep']), h('span', { class: 'small ' + (v.stale ? 'err' : 'mut'), title: v.summary || 'Run /pattern-sweep in an interactive session of this repo.' }, [txt])])]);
+}
 function repoView(repo) {
   const rs = S.runs.filter(r => r.repo === repo); const prog = rs.filter(inProgress); const os = openStubs(repo);
   const ow = (S.stubs.openWork || []).find(o => o.repo === repo); const oq = S.q.filter(q => q.state === 'open' && qRepo(q) === repo).sort((a, b) => a.ts.localeCompare(b.ts));
@@ -1420,6 +1426,7 @@ function repoView(repo) {
   const fv = flowsView(repo); if (fv) kids.push(fv);
   const dp = docPrsView(repo); if (dp) kids.push(dp);
   const rl = rulingsView(repo); if (rl) kids.push(rl);
+  const sw = sweepView(repo); if (sw) kids.push(sw);
   const vm = vrRepoLink(repo); if (vm) kids.push(vm);
   kids.push(h('section', { class: 'main-col', 'data-k': 'sec:report' }, [h('h2', {}, ['Open work']), frame]));
   return h('div', {}, kids);
@@ -1961,6 +1968,7 @@ async function load(what) {
   if (all || w.has('runs') || w.has('scan')) jobs.push(fetchJ('/api/delivery-flows').then(d => { if (d && d.repos) { S.flows = {}; d.repos.forEach(v => { S.flows[v.repo] = v; }); } }));
   // The non-code PR list is fetched once per repo; reload it when the server says it changed (or any run changed) while it is on screen.
   if ((all || w.has('docprs') || w.has('runs')) && R.kind === 'repo') { const st = S.docPrs[R.repo]; if (st && !st.loading) jobs.push(fetch('/api/repo/' + enc(R.repo) + '/doc-prs').then(r => r.json()).then(j => { if (!S.docPrs[R.repo] || !S.docPrs[R.repo].merging || j.merging) S.docPrs[R.repo] = j; }).catch(() => {})); }
+  if ((all || w.has('runs')) && R.kind === 'repo') { const sr = R.repo; jobs.push(fetchJ('/api/pattern-sweep/' + enc(sr)).then(d => { if (d && d.repo) S.sweep[sr] = d; })); }
   if ((all || w.has('runs') || w.has('rulings')) && R.kind === 'repo') { const rr = R.repo; jobs.push(fetchJ('/api/rulings/' + enc(rr)).then(d => { if (d && Array.isArray(d.rules)) S.rulings[rr] = d.rules; })); }
   if ((all || w.has('chat')) && R.kind === 'chat') jobs.push(loadChat());
   await Promise.all(jobs);
