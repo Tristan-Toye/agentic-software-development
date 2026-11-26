@@ -64,7 +64,7 @@ whole documents never land in the dossier, only their outcomes as lines.
 | # | Heading | Content | Writer |
 |---|---|---|---|
 | 1 | `## Problem` | What is wrong or missing, with evidence labels. | `/plan` |
-| 2 | `## Approach` | One sentence, then the reasons. Then the rejected options. Last lines: `Diagrams affected: <file stems of docs/architecture/, comma-separated>` or `Diagrams affected: none — <why>`. Then `Diagrams new: <proposed stem> — <one line: the flow>` (comma-separated for several) or `Diagrams new: none — <why>` (the reason is mandatory; an older dossier's bare `none` is still accepted and the stage-3 author supplies it): a diagram the change must add (a flow across crates, processes or containers that no existing sequence diagram shows, or a new external system). | `/plan` |
+| 2 | `## Approach` | One sentence, then the reasons. Then the rejected options (a line that starts `Rejected` or `Alternatives`; `validate_pipeline.py` refuses a `planned` or `ready` dossier with none: `[approach-rejected]`). Last lines: `Diagrams affected: <file stems of docs/architecture/, comma-separated>` or `Diagrams affected: none — <why>`. Then `Diagrams new: <proposed stem> — <one line: the flow>` (comma-separated for several) or `Diagrams new: none — <why>` (the reason is mandatory; an older dossier's bare `none` is still accepted and the stage-3 author supplies it): a diagram the change must add (a flow across crates, processes or containers that no existing sequence diagram shows, or a new external system). | `/plan` |
 | 3 | `## Decisions` | The decision register: one row per choice the plan makes (`flow: 2` only). | `/plan`; the owner's rulings land in its `Ruling` column |
 | 4 | `## Contract` | Signatures and documentation comments. No bodies. | `/plan`, then `/work-on` until the fan-out |
 | 5 | `## Work packages` | Table: package, owned paths, depends on. | `/plan`, then `/work-on` until the fan-out |
@@ -161,6 +161,10 @@ them needs to see the others.
   a signature returns `CONTRACT-CHANGE:` and stops.
 
 #### The observability checklist
+
+`validate_pipeline.py` checks two rows mechanically for a dossier that is not yet `done`: a member that can fail or
+takes a key, id or path states its failure or absent case (`[contract-failure-doc]`, a warning), and every file the
+contract names in a header comment is owned by a work package (`[contract-covers-paths]`, a defect).
 
 Every failure this pipeline can suffer that has no diagnosable cause starts with
 a promise a test could not observe. Run each documented member past these before

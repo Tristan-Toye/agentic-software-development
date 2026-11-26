@@ -33,6 +33,7 @@ import argparse
 import contextlib
 import io
 import json
+import fnmatch
 import os
 import re
 import shutil
@@ -307,6 +308,21 @@ VAGUE_CRITERION_WORDS = {
     "nice",
 }
 
+# Phrases review findings called unfalsifiable ("passes", "by construction"): a criterion that uses one and
+# names no value, identifier or case is not testable. Applied to a dossier that is not yet `done` (see
+# REVIEW_RULE_STATUSES); the base set above applies to every dossier.
+VAGUE_CRITERION_WORDS_REVIEW = {
+    "by construction",
+    "as expected",
+    "gracefully",
+    "seamlessly",
+    "passes",
+    "works",
+    "handles",
+    "behaves",
+    "consistently",
+}
+
 # heuristic for a body inside the ## Contract section
 BODY_RE = re.compile(r"^\s+(return|yield)\s+\S")
 ASSIGN_RE = re.compile(r"^\s{2,}[A-Za-z_][\w.\[\]]*\s*(?<![=!<>+\-*/])=(?!=)\s*\S")
@@ -573,7 +589,7 @@ def check_headings(where: str, body: str, expected: list[str], rep: Report) -> N
             )
 
 
-def check_anchors(where: str, fm: dict, repo_root: Path, rep: Report) -> None:
+def check_anchors(where: str, fm: dict, repo_root: Path, rep: Report, body: str = "", status: str = "") -> None:
     anchors = fm.get("anchors") or []
     if not isinstance(anchors, list):
         rep.defect(where, "'anchors' must be a list")
@@ -611,6 +627,65 @@ def check_anchors(where: str, fm: dict, repo_root: Path, rep: Report) -> None:
                 f"anchor '{a}' is past the end of the file ({n} lines)"
                 + (" — planned against another checkout" if planning_repo else ""),
             )
+    # the cited symbol appears on or near the cited line; a dossier planned in another checkout is checked at
+    # Phase 2, once its anchors are re-pointed
+    if body and status in REVIEW_RULE_STATUSES and not planning_repo:
+        for msg in anchor_symbol_findings(body, repo_root):
+            _review_emit(rep, "anchor-symbol", where, msg)
+
+
+ANCHOR_CITE_RE = re.compile(r"`?([\w./-]+\.\w{1,6}):(\d+)(?:[-–](\d+))?`?")
+SYMBOL_TOKEN_RE = re.compile(r"`([A-Za-z_][\w:.]*)(?:\(\))?`")
+ANCHOR_WINDOW = 8
+ABSENCE_RE = re.compile(r"\b(?:no|not|never|absent|missing|without|lacks?|nothing|none|neither|nor|unused|today)\b", re.I)
+
+
+def _is_symbol(tok: str) -> bool:
+    """An identifier worth proving at the anchor: snake_case, CamelCase or a call; not a plain word or a label."""
+    if tok in EVIDENCE_LABELS:
+        return False
+    return "_" in tok or bool(re.search(r"[a-z][A-Z]|^[A-Z][a-z]+[A-Z]", tok))
+
+
+def _read_lines(root: Path, path: str) -> list[str] | None:
+    target = root / path
+    return target.read_text(errors="replace").split("\n") if target.is_file() else None
+
+
+def anchor_symbol_findings(body: str, repo_root: Path, reader=_read_lines) -> list[str]:
+    """A `path:line` citation in the prose sits in a sentence that names symbols in backticks: one of them must
+    appear within ANCHOR_WINDOW lines of the cited line (the anchor then points at what the sentence claims)."""
+    out: list[str] = []
+    seen: set[tuple[str, str]] = set()
+    for para in re.split(r"\n\s*\n|(?<=[.!?])\s+(?=[A-Z])|\n(?=\s*(?:[-*]|\d+[.)])\s)", body):
+        cites = list(ANCHOR_CITE_RE.finditer(para))
+        if not cites:
+            continue
+        if ABSENCE_RE.search(para):
+            continue  # a sentence about what does NOT exist cites a line only for the surrounding code
+        syms: list[str] = []
+        for tok in SYMBOL_TOKEN_RE.findall(para):
+            if ANCHOR_CITE_RE.fullmatch(tok) or "/" in tok:
+                continue
+            leaf = re.split(r"::|\.", tok)[-1]
+            if len(leaf) >= 4 and _is_symbol(leaf) and leaf not in syms:
+                syms.append(leaf)
+        if not syms:
+            continue
+        for c in cites:
+            path, a, b = c.group(1), int(c.group(2)), c.group(3)
+            if (path, c.group(2)) in seen:
+                continue
+            seen.add((path, c.group(2)))
+            lines = reader(repo_root, path)
+            if lines is None or a > len(lines):
+                continue
+            hi = int(b) if b else a
+            window = "\n".join(lines[max(0, a - 1 - ANCHOR_WINDOW): min(len(lines), hi + ANCHOR_WINDOW)])
+            if not any(re.search(r"(?<![\w])" + re.escape(s) + r"(?![\w])", window) for s in syms):
+                out.append(f"anchor '{path}:{a}' sits in a sentence that names {', '.join('`'+s+'`' for s in syms[:3])} "
+                           f"but none appears within {ANCHOR_WINDOW} lines of that line")
+    return out
 
 
 def check_evidence(where: str, text: str, rep: Report) -> None:
@@ -681,6 +756,71 @@ def check_disjoint(where: str, rows: list[tuple[str, list[str]]], rep: Report) -
                 )
 
 
+# Review-finding clusters that recur across dossiers (owner-approved: a recurring finding becomes a checker
+# rule). Each rule applies to a dossier that is not yet `done`/`dropped`, so a built dossier never breaks.
+# Severity is per rule: "error" is a DEFECT, "warn" a WARNING (rules whose dry run over the real dossiers
+# showed a high false-positive rate start as warnings; see the PR table and references/formats/dossier.md).
+REVIEW_RULE_SEVERITY = {
+    "contract-failure-doc": "warn",
+    "contract-covers-paths": "error",
+    "anchor-symbol": "warn",
+    "approach-rejected": "error",
+}
+REVIEW_RULE_STATUSES = ("planned", "ready")
+
+PATH_TOKEN_RE = re.compile(
+    r"(?<![\w/.:-])((?:[\w.-]+/)+[\w.-]+\.(?:rs|py|cs|ts|tsx|js|go|java|kt|toml|ya?ml|json|md|sql|sh|tf|proto|csproj|sln))\b"
+)
+
+
+HEADER_PATH_RE = re.compile(r"^\s*(?://!?/?|#|--|/?\*+)?\s*(?:file:\s*)?" + PATH_TOKEN_RE.pattern.replace("(?<![\\w/.:-])", ""))
+
+
+def _review_emit(rep: Report, rule: str, where: str, msg: str) -> None:
+    text = f"[{rule}] {msg}"
+    if REVIEW_RULE_SEVERITY.get(rule) == "error":
+        rep.defect(where, text)
+    else:
+        rep.warn(where, text)
+
+
+def _path_owned(path: str, owned: list[str]) -> bool:
+    norm = os.path.normpath(path)
+    for o in owned:
+        on = os.path.normpath(o.rstrip("*").rstrip("/")) if o.endswith(("*", "/")) else os.path.normpath(o)
+        if norm == on or norm.startswith(on.rstrip("/") + os.sep):
+            return True
+        if any(ch in o for ch in "*?[") and fnmatch.fnmatch(norm, o):
+            return True
+    return False
+
+
+def contract_path_findings(contract: str, criteria: str, rows: list[tuple[str, list[str]]]) -> list[str]:
+    """Paths the contract block and the criteria's `(owner: <path>; ...)` annotations name that no package owns."""
+    owned = [p for _, ps in rows for p in ps]
+    named: dict[str, str] = {}
+    for blk in re.findall(r"```[\w+-]*\n(.*?)```", contract, re.S):
+        for ln in blk.split("\n"):
+            # a file header line (`// path/to/file.rs — what changes`); a path in the middle of a sentence is a mention
+            m = HEADER_PATH_RE.match(ln)
+            if m:
+                named.setdefault(m.group(1), "## Contract")
+    # test files are owned by the UT/IT rows; a dossier with no test rows (kanban) names its tests elsewhere
+    has_test_rows = any(n.split(" ", 1)[0] in ("UT", "IT") for n, _ in rows)
+    for m in re.finditer(r"\(owner:\s*([^;)]+?)\s*[;)]", criteria if has_test_rows else ""):
+        for p in re.split(r"[,\s]+", m.group(1)):
+            if "/" in p and "." in p.rsplit("/", 1)[-1]:
+                named.setdefault(p.strip("`"), "## Acceptance criteria")
+    return [f"no package owns the file '{p}' named in {src}" for p, src in named.items() if not _path_owned(p, owned)]
+
+
+def check_contract_covers_paths(where: str, contract: str, criteria: str, rows: list[tuple[str, list[str]]],
+                                rep: Report) -> None:
+    """Every path the contract or the criteria's owner annotations touch is under some work package's path."""
+    for msg in contract_path_findings(contract, criteria, rows):
+        _review_emit(rep, "contract-covers-paths", where, msg)
+
+
 def check_contract(where: str, text: str, rep: Report) -> None:
     blocks = re.findall(r"```[\w+-]*\n(.*?)```", text, re.S)
     if not blocks:
@@ -718,6 +858,97 @@ def check_contract(where: str, text: str, rep: Report) -> None:
                     f"rust fn '{m.group(1)}' states no visibility — a test "
                     f"only reaches a 'pub' seam",
                 )
+
+FAILURE_DOC_RE = re.compile(
+    r"\b(errors?|throws?|raises?|fails?|failures?|refus\w+|reject\w*|returns?\s+(?:`?(?:none|null|nothing|empty|false)`?|an?\s+empty)|"
+    r"absent|missing|not found|unknown|no such|empty|nothing|`?none`?|`?null`?|`?err\b|panics?)\b",
+    re.I,
+)
+FAILS_SIG_RE = re.compile(r"\bResult<|\bOption<|\bOptional\[|\|\s*None\b|\bthrows\b|\bTask<[^>]*\?|\w\?\s*[;{(]|\bnullable\b|\berror\b", re.I)
+KEYED_PARAM_RE = re.compile(
+    r"[(,]\s*(?:&?(?:mut\s+)?)?(?:self,\s*)?(?:[\w]+\s+)?(key|id|\w+_id|\w+_key|path|name|expected|prior|limit|token)\s*[:,)=]"
+    r"|\b(?:string|int|long|Guid|Uri)\s+(?:key|id|\w+Id|\w+Key|path|name|expected|prior|limit|token)\b",
+    re.I,
+)
+MEMBER_SIG_RE = re.compile(r"^\s*(?:pub(?:\([\w:]+\))?\s+)?(?:async\s+)?(?:fn|def|function|func)\s+(\w+)\s*[(<]"
+                           r"|^\s*(?:public|internal|protected)\s+[\w<>\[\]?,. ]+\s+(\w+)\s*\(")
+
+
+def contract_members(contract: str) -> list[tuple[str, str, str]]:
+    """(name, signature, doc) for each member of every fenced block: `///`-style docs above, a docstring below."""
+    out: list[tuple[str, str, str]] = []
+    for blk in re.findall(r"```[\w+-]*\n(.*?)```", contract, re.S):
+        lines = blk.split("\n")
+        above: list[str] = []
+        for i, ln in enumerate(lines):
+            s = ln.strip()
+            m = MEMBER_SIG_RE.match(ln)
+            if m:
+                sig = s
+                j = i
+                while j + 1 < len(lines) and sig.count("(") > sig.count(")") and j - i < 8:
+                    j += 1
+                    sig += " " + lines[j].strip()
+                doc = list(above)
+                k = j + 1
+                if k < len(lines) and re.match(r"\s*(\"\"\"|''')", lines[k]):
+                    q = lines[k].strip()[:3]
+                    doc.append(lines[k])
+                    if lines[k].strip().count(q) < 2:
+                        k += 1
+                        while k < len(lines) and q not in lines[k]:
+                            doc.append(lines[k])
+                            k += 1
+                        if k < len(lines):
+                            doc.append(lines[k])
+                out.append((m.group(1) or m.group(2), sig, " ".join(doc)))
+                above = []
+            elif s.startswith(("///", "//", "*", "/**", "#", "[")) or s.endswith("*/"):
+                above.append(s)
+            elif not s:
+                above = [] if not above else above
+            else:
+                above = []
+    return out
+
+
+def contract_failure_findings(contract: str) -> list[str]:
+    out: list[str] = []
+    for name, sig, doc in contract_members(contract):
+        fails = bool(FAILS_SIG_RE.search(sig)) or bool(re.search(r"\b(throws?|raises?|errors?)\b", doc, re.I))
+        keyed = bool(KEYED_PARAM_RE.search(sig))
+        if (fails or keyed) and not FAILURE_DOC_RE.search(doc):
+            why = "can fail" if fails else "takes a key/id/path argument"
+            out.append(f"contract member '{name}' {why} but its doc comment states no failure or absent case "
+                       f"(an Errors/Throws/Returns-none/Absent sentence)")
+    return out
+
+
+def check_contract_failure_doc(where: str, contract: str, rep: Report) -> None:
+    """A member that can fail or takes a key/id documents its failure or absent case."""
+    for msg in contract_failure_findings(contract):
+        _review_emit(rep, "contract-failure-doc", where, msg)
+
+
+REJECTED_RE = re.compile(
+    r"^[\s>*_#|-]*(?:the\s+)?(?:rejected(?:\s+(?:options?|alternatives?|shapes?))?|alternatives?(?:\s+(?:rejected|considered))?|"
+    r"options?\s+(?:not\s+taken|that\s+lost|rejected|considered)|not\s+taken|considered\s+and\s+rejected|"
+    r"rejected\s+before)\b",
+    re.I | re.M,
+)
+
+
+def approach_has_rejected(approach: str) -> bool:
+    return bool(REJECTED_RE.search(approach)) or bool(re.search(r"\brejects?\s+(?:three|two|four|\d+)\b|\bwas\s+rejected\b|\brejected\b", approach, re.I))
+
+
+def check_approach(where: str, approach: str, rep: Report) -> None:
+    """`## Approach` names at least one rejected alternative (the dossier.md template's row 2)."""
+    if not approach_has_rejected(approach):
+        _review_emit(rep, "approach-rejected", where,
+                     "## Approach names no rejected alternative; add a 'Rejected options' line with each option "
+                     "not taken and why")
+
 
 
 CRITERION_OWNER_RE = re.compile(r"\(owner:\s*[\w./-]+\s*;\s*env:\s*[\w-]+\s*\)")
@@ -759,7 +990,7 @@ def flow2_criterion_defect(item: str) -> str | None:
     return None
 
 
-def check_criteria(where: str, text: str, rep: Report, flow2: bool = False) -> None:
+def check_criteria(where: str, text: str, rep: Report, flow2: bool = False, review: bool = False) -> None:
     items = [ln.strip() for ln in text.split("\n") if re.match(r"^\s*\d+[.)]\s+\S", ln)]
     if not items:
         rep.defect(where, "## Acceptance criteria has no numbered items")
@@ -770,8 +1001,13 @@ def check_criteria(where: str, text: str, rep: Report, flow2: bool = False) -> N
             problem = flow2_criterion_defect(item)
             if problem:
                 rep.defect(where, problem)
-        vague = sorted(w for w in VAGUE_CRITERION_WORDS if re.search(rf"\b{w}\b", low))
+        words = VAGUE_CRITERION_WORDS | VAGUE_CRITERION_WORDS_REVIEW if review else VAGUE_CRITERION_WORDS
+        vague = sorted(w for w in words if re.search(rf"\b{w}\b", low))
         concrete = bool(re.search(r"\d", item) or "`" in item)
+        if review:
+            # the list number and the owner annotation carry digits of their own; judge the claim alone
+            claim = CRITERION_OWNER_RE.sub("", re.sub(r"^\s*\d+[.)]\s+", "", item))
+            concrete = bool(re.search(r"\d", claim) or "`" in claim)
         if vague and not concrete:
             rep.defect(
                 where,
@@ -1290,10 +1526,11 @@ def validate_dossier(path: Path, repo_root: Path) -> Report:
         # K5: a kanban dossier is sized to the change; `## Decisions` is optional (none to record).
         expected = DOSSIER_SECTIONS
     check_headings(where, body, expected, rep)
-    check_anchors(where, fm, repo_root, rep)
+    check_anchors(where, fm, repo_root, rep, body, str(status))
     check_pr_field(where, path.read_text(), rep)
 
     sec = sections(body)
+    review_rules = str(status) in REVIEW_RULE_STATUSES  # a built (`done`) or dropped dossier is never re-linted
     if "## Problem" in sec:
         check_evidence(f"{where} ## Problem", sec["## Problem"], rep)
     if "## Approach" in sec:
@@ -1303,8 +1540,12 @@ def validate_dossier(path: Path, repo_root: Path) -> Report:
                 "a load-bearing ASSUMPTION blocks 'ready'; check it and "
                 "promote it to FACT, or move it to a stated risk",
             )
+        if review_rules:
+            check_approach(f"{where} ## Approach", sec["## Approach"], rep)
     if "## Contract" in sec:
         check_contract(f"{where} ## Contract", sec["## Contract"], rep)
+        if review_rules:
+            check_contract_failure_doc(f"{where} ## Contract", sec["## Contract"], rep)
         # Only where the id is local (#233): in committed mode dossiers are tracked and their ids are public, and a
         # repository that cites them in source is following its own habit, not leaking a gitignored name.
         if discovery_mode(repo_root)[0] != "committed":
@@ -1312,12 +1553,15 @@ def validate_dossier(path: Path, repo_root: Path) -> Report:
     if "## Work packages" in sec:
         rows = parse_packages(sec["## Work packages"])
         check_disjoint(f"{where} ## Work packages", rows, rep)
+        if review_rules and "## Contract" in sec:
+            check_contract_covers_paths(f"{where} ## Work packages", sec["## Contract"],
+                                        sec.get("## Acceptance criteria", ""), rows, rep)
         n = len(implementer_packages(rows))
         if kanban and n != 1:
             rep.defect(f"{where} ## Work packages", f"a kanban dossier has exactly one implementer package, found {n}")
     if "## Acceptance criteria" in sec:
         check_criteria(
-            f"{where} ## Acceptance criteria", sec["## Acceptance criteria"], rep, flow2
+            f"{where} ## Acceptance criteria", sec["## Acceptance criteria"], rep, flow2, review_rules
         )
     if "## Build log" in sec:
         check_build_log(f"{where} ## Build log", sec["## Build log"], str(status), rep,
@@ -2102,6 +2346,8 @@ INFERENCE: the store writes one item two times, from the fact above.
 
 The queue drains behind one lock, so parallel callers share one drain.
 
+Rejected options: one lock per caller, which still writes one item two times. A queue per thread, which loses the oldest-first order.
+
 ## Contract
 
 ```python
@@ -2757,6 +3003,7 @@ def selftest() -> int:
 
         print("\n--- selftest: a contract-fix commit without a Lesson trailer is a DEFECT ---")
         caught_lesson = selftest_contract_lessons()
+        caught_review_rules = selftest_review_rules()
         caught_receipts = selftest_receipts()
         caught_sites = selftest_settled_sites()
 
@@ -2824,6 +3071,7 @@ def selftest() -> int:
                 and clean
                 and caught_pcl
                 and caught_lesson
+                and caught_review_rules
                 and caught_receipts
                 and caught_sites
                 and caught_owner
@@ -2890,6 +3138,92 @@ def selftest_receipts() -> bool:
         print(f"{'ok  ' if passed else 'FAIL'}  receipts: {name}")
         ok &= passed
     return ok
+
+
+def selftest_review_rules() -> bool:
+    """The review-cluster rules: each fires on its defect and stays silent on its negative control."""
+    def rep_of(fn, *a) -> Report:
+        r = Report()
+        fn("w", *a, r)
+        return r
+
+    def vague_run(item: str, review: bool) -> Report:
+        r = Report()
+        check_criteria("w", item, r, False, review)
+        return r
+
+    sloppy = "```python\nclass Store:\n    def get(self, key: str) -> int | None:\n        \"\"\"Read one item.\"\"\"\n        ...\n```\n"
+    sound = sloppy.replace("Read one item.", "Read one item. Returns None when the key is absent.")
+    plain = "```python\nclass Store:\n    def size(self) -> int:\n        \"\"\"Count the items.\"\"\"\n        ...\n```\n"
+    rust = "```rust\n/// Look the row up.\npub fn find(id: u32) -> Result<Row, Error>;\n```\n"
+    rows = [("P1 store", ["src/store.py"]), ("UT tests", ["tests/unit/"])]
+    contract = "```python\n# src/store.py - new\nclass Store: ...\n# src/other.py - new\nclass Other: ...\n```\n"
+    mention = "```python\n# note: reuses `src/other.py` as is\nclass Store: ...\n```\n"
+    crit = "1. It works for `a`. (owner: tests/unit/test_s.py; env: local)\n"
+    crit_bad = "1. It works for `a`. (owner: tests/other/test_s.py; env: local)\n"
+    # a repo file for the anchor rule: the cited symbol sits on line 3, a decoy sits far away
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        (root / "src").mkdir()
+        (root / "src" / "a.py").write_text("x = 1\ny = 2\ndef flush_all():\n    pass\n" + "z = 0\n" * 40)
+        near = "FACT: the drain is `flush_all` (`src/a.py:3`)."
+        far = "FACT: the drain is `flush_all` (`src/a.py:40`)."
+        absent = "FACT: nothing named `flush_all` is there (`src/a.py:40`)."
+        plain_word = "FACT: the loop is a `drain` (`src/a.py:40`)."
+        anchor_cases = [
+            ("the symbol on the cited line passes", not anchor_symbol_findings(near, root)),
+            ("the symbol far from the cited line is found", len(anchor_symbol_findings(far, root)) == 1),
+            ("a sentence about an absence is not checked", not anchor_symbol_findings(absent, root)),
+            ("a plain word is not a symbol", not anchor_symbol_findings(plain_word, root)),
+        ]
+    cases = anchor_cases + [
+        ("a keyed member with no absent case warns", len(rep_of(check_contract_failure_doc, sloppy).warnings) == 1),
+        ("a documented absent case is silent", not rep_of(check_contract_failure_doc, sound).warnings),
+        ("a member that cannot fail needs nothing", not rep_of(check_contract_failure_doc, plain).warnings),
+        ("a Result member with a bare doc warns", len(rep_of(check_contract_failure_doc, rust).warnings) == 1),
+        ("a path the contract names and no package owns", len(rep_of(check_contract_covers_paths, contract, "", rows).defects)
+         == 1),
+        ("owned paths are silent", not rep_of(check_contract_covers_paths, contract.replace("src/other.py", "src/store.py"),
+                                              crit, rows).defects),
+        ("a path mentioned in a sentence is no ownership demand", not rep_of(check_contract_covers_paths, mention, "",
+                                                                         rows).defects),
+        ("an owner annotation outside every package", len(rep_of(check_contract_covers_paths, "```x\n```\n", crit_bad,
+                                                                    rows).defects) == 1),
+        ("an approach with a rejected option passes", not rep_of(check_approach, "Use a lock.\n\nRejected: a queue.").defects),
+        ("an approach with no rejected option is refused", len(rep_of(check_approach, "Use a lock. It is simple.").defects) == 1),
+        ("every rule applies only to a not-yet-done dossier", "done" not in REVIEW_RULE_STATUSES),
+        ("'by construction' with no value is vague for a ready dossier",
+         len(vague_run("1. The cache is right by construction. (owner: tests/a.py; env: CI)", True).defects) == 1),
+        ("the same words are not re-judged for a done dossier",
+         not vague_run("1. The cache is right by construction. (owner: tests/a.py; env: CI)", False).defects),
+        ("a vague phrase with a value is concrete",
+         not vague_run("1. The cache holds for key `a`. (owner: tests/a.py; env: CI)", True).defects),
+    ]
+    # end to end: a ready dossier with no rejected option fails, the same text as `done` is not re-linted
+    no_alt = GOOD_DOSSIER.replace(
+        "Rejected options: one lock per caller, which still writes one item two times. "
+        "A queue per thread, which loses the oldest-first order.\n\n", "")
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        (root / "src").mkdir()
+        (root / "src" / "flush.py").write_text("a\nb\nc\nd\n")
+        dd = root / ".discovery" / "dossiers"
+        dd.mkdir(parents=True)
+        (dd / "W-014-flush.md").write_text(no_alt)
+        ready = validate_dossier(dd / "W-014-flush.md", root)
+        (dd / "W-014-flush.md").write_text(no_alt.replace("status: ready", "status: done"))
+        done = validate_dossier(dd / "W-014-flush.md", root)
+        (dd / "W-014-flush.md").write_text(GOOD_DOSSIER)
+        good = validate_dossier(dd / "W-014-flush.md", root)
+    cases += [
+        ("a ready dossier with no rejected option fails validation", any("approach-rejected" in x for x in ready.defects)),
+        ("the same dossier as done is not re-linted", not any("approach-rejected" in x for x in done.defects)),
+        ("the reference dossier stays clean of the review rules", not [x for x in good.defects + good.warnings
+                                                                        if any(r in x for r in REVIEW_RULE_SEVERITY)]),
+    ]
+    for name, passed in cases:
+        print(f"{'PASS' if passed else 'FAIL'}  {name}")
+    return all(p for _, p in cases)
 
 
 def selftest_contract_lessons() -> bool:

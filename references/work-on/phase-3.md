@@ -51,12 +51,16 @@ same file on two branches, one merge wins, and the loser's tests then fail for a
 reason nobody can diagnose.
 
 **Lint the criteria first.** `python3 ${PLUGIN_ROOT}/scripts/lint_criteria.py
-<dossier>` checks three defects of the dossier itself: an example input or
+<dossier>` checks these defects of the dossier itself: an example input or
 number in a criterion that contradicts the comparison it sits beside, a timing
 criterion with no clock start and stop, and a count with no environment. Fix
 each in the dossier (`dossier_edit.py`) before you map owners; a blind author
 cannot repair a criterion that disagrees with itself. Log `CRITERIA-LINT: <N>
-finding(s), <M> fixed`. The script costs no agent turn.
+finding(s), <M> fixed`. The script costs no agent turn. It also flags three more
+shapes: a criterion that says it `passes` or `works` and names no input value or negative case
+(`no-discriminating-input`), a "per case" criterion that lists no cases (`per-case-undefined`),
+and, as a warning only, a refusal text quoted in `## Contract` that no criterion names
+(`refusal-text-uncovered`).
 
 **Then map every acceptance criterion to the test file that will own it**, and
 write the map into `## Build log` before you spawn. A criterion with no owner
