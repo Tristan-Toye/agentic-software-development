@@ -317,14 +317,23 @@ RUST_PATHS = ["*.rs", "Cargo.toml", "Cargo.lock", "build.rs", "rust-toolchain*",
 PY_PATHS = ["*.py", "*.pyi", "pyproject.toml", "setup.cfg", "setup.py", "tox.ini", "ruff.toml", ".ruff.toml", "mypy.ini", ".mypy.ini", "pyrightconfig.json", ".flake8", "requirements*.txt", "uv.lock", "poetry.lock"]
 JS_PATHS = ["*.ts", "*.tsx", "*.js", "*.jsx", "*.mjs", "*.cjs", "*.mts", "*.cts", "package.json", "package-lock.json", "pnpm-lock.yaml", "yarn.lock", "bun.lock*", "tsconfig*.json", ".eslintrc*", "eslint.config.*", ".prettierrc*", "prettier.config.*", "biome.json*"]
 GO_PATHS = ["*.go", "go.mod", "go.sum", "go.work", ".golangci*"]
+DOTNET_PATHS = ["*.cs", "*.csproj", "*.sln", "*.slnx", "*.props", "*.targets", "*.resx", "*.editorconfig", ".editorconfig",
+                "global.json", "nuget.config", "NuGet.Config", "packages.lock.json", "appsettings*.json", "*.runsettings"]
+TF_PATHS = ["*.tf", "*.tfvars", "*.tf.json", "*.tftest.hcl", ".terraform.lock.hcl", ".terraform-version"]
 INFERRED_PATHS = {
     "cargo": RUST_PATHS, "rustfmt": RUST_PATHS, "rustc": RUST_PATHS,
     "ruff": PY_PATHS, "mypy": PY_PATHS, "pyright": PY_PATHS, "black": PY_PATHS, "isort": PY_PATHS,
     "flake8": PY_PATHS, "pylint": PY_PATHS, "pytest": PY_PATHS,
     "tsc": JS_PATHS, "eslint": JS_PATHS, "prettier": JS_PATHS, "biome": JS_PATHS,
     "go": GO_PATHS, "gofmt": GO_PATHS, "golangci-lint": GO_PATHS,
+    "dotnet": DOTNET_PATHS, "terraform": TF_PATHS, "tofu": TF_PATHS,
 }
+# Paths the pipeline itself writes (dossiers, analysis, staging): no tool gate reads them, so they never make every
+# gate run; a gate that reads one (a dossier-state checker) is path-unknown and runs anyway.
+PIPELINE_PATHS = [".discovery/**", ".agent-staging/**"]
+EXPORT_PREFIX_RE = re.compile(r"""^\s*(?:export\s+[A-Za-z_][A-Za-z0-9_]*=(?:'[^']*'|"[^"$`\\]*"|[^\s;|&<>$`()'"]*)\s*;\s*)+""")
 INFERRED_KINDS = {"clippy": "lint", "check": "compile", "build": "compile", "doc": "compile", "fmt": "format",
+                  "format": "format", "validate": "compile",
                   "test": "test", "nextest": "test", "vet": "lint"}
 TOOL_KINDS = {"ruff": "lint", "mypy": "compile", "pyright": "compile", "tsc": "compile", "eslint": "lint",
               "flake8": "lint", "pylint": "lint", "golangci-lint": "lint", "black": "format", "isort": "format",
@@ -336,7 +345,10 @@ NAME_KIND_RE = (("test", re.compile(r"(^|[-_.])(test|tests|unit|e2e|spec|integra
 
 
 def _segments(command: str) -> list[list[str]] | None:
-    """Token lists of a plain `a && b` command, None when it holds other shell syntax."""
+    """Token lists of a plain `a && b` command, None when it holds other shell syntax. Leading
+    `export NAME=value;` statements (from-workflow writes a job's env that way) only set the
+    environment, so they are dropped first."""
+    command = EXPORT_PREFIX_RE.sub("", command)
     if re.search(r"[|;<>`$()\n]|\|\|", command):
         return None
     try:
@@ -367,9 +379,12 @@ def infer_paths(command: str) -> list[str] | None:
         words = _tool_words(tokens)
         if not words or os.path.basename(words[0]) not in INFERRED_PATHS:
             return None
-        if any("/" in w and not w.startswith("-") and w.endswith((".sh", ".py")) for w in words[1:]):
+        globs = INFERRED_PATHS[os.path.basename(words[0])]
+        # a path argument outside the tool's own files (`cargo run -- deploy/x.yml`, a script) is read too: path-unknown
+        if any("/" in w and not w.startswith("-") and not path_matches(w[2:] if w.startswith("./") else w, globs)
+               for w in words[1:]):
             return None
-        out += [g for g in INFERRED_PATHS[os.path.basename(words[0])] if g not in out]
+        out += [g for g in globs if g not in out]
     return out
 
 
@@ -384,7 +399,7 @@ def infer_kind(gate: dict) -> str | None:
         if not words:
             continue
         tool = os.path.basename(words[0])
-        if tool in ("cargo", "go"):
+        if tool in ("cargo", "go", "dotnet", "terraform", "tofu"):
             sub = next((w for w in words[1:] if not w.startswith(("-", "+"))), "")
             k = INFERRED_KINDS.get(sub)
             if tool == "go" and sub == "test":
@@ -467,7 +482,8 @@ def select_affected(gates: list[dict], changed: list[str]) -> tuple[dict[str, st
     """({gate name: skip reason} for every gate no changed path touches, note).
     A changed path claimed by no path-known gate runs everything: empty skip map."""
     known = [g for g in gates if g.get("paths")]
-    unclaimed = [p for p in changed if not any(path_matches(p, g["paths"]) for g in known)]
+    unclaimed = [p for p in changed if not path_matches(p, PIPELINE_PATHS)
+                 and not any(path_matches(p, g["paths"]) for g in known)]
     if unclaimed:
         more = f" (+{len(unclaimed) - 1} more)" if len(unclaimed) > 1 else ""
         return {}, f"changed path {unclaimed[0]!r}{more} maps to no gate; running every gate"
@@ -1845,6 +1861,17 @@ def selftest() -> int:
               and infer_paths("python3 -m mypy src") == PY_PATHS and infer_paths("npx tsc --noEmit") == JS_PATHS
               and infer_paths("./scripts/check.sh") is None and infer_paths("cargo fmt --check | tee x") is None
               and infer_paths("cargo check && ./x.sh") is None and infer_paths("make lint") is None)
+        check("infer: from-workflow export prefixes are dropped; dotnet and terraform are path-known; a path outside the tool's files is not",
+              infer_paths("export CARGO_NET_RETRY='10'; export A=\"x y\"; cargo clippy --workspace") == RUST_PATHS
+              and infer_paths("export TF_VAR_x='[\"a\"]'; terraform fmt -check") == TF_PATHS
+              and infer_paths("dotnet test --project Source/A.Tests/A.Tests.csproj --no-build") == DOTNET_PATHS
+              and infer_paths("cargo deny --manifest-path ./Cargo.toml check") == RUST_PATHS
+              and infer_paths("export X='1'; cargo run --bin lc -- deploy/compose/a.yml") is None
+              and infer_paths("export X=$(pwd); cargo build") is None and infer_paths("export X='1'; bash scripts/x.sh") is None)
+        check("infer kind: dotnet and terraform subcommands",
+              [infer_kind({"name": "n", "command": c, "kind": None}) for c in
+               ("dotnet build A.sln", "dotnet test --project A.csproj", "terraform validate", "dotnet format --verify-no-changes")]
+              == ["compile", "test", "compile", "format"])
         kinds = {n: infer_kind({"name": n, "command": c, "kind": None}) for n, c in (
             ("a", "cargo clippy --workspace"), ("b", "cargo fmt --check"), ("c", "cargo nextest run"),
             ("d", "ruff check ."), ("e", "cargo check --locked"), ("lint-all", "make everything"), ("z", "make everything"))}
@@ -1855,6 +1882,9 @@ def selftest() -> int:
         check("select_affected: only gates a changed path touches stay", sk == {"py": "skipped: no changed paths"})
         sk, note = select_affected(gs, ["x/a.rs", "docs/readme.md"])
         check("select_affected: a changed path no gate claims runs everything", sk == {} and "maps to no gate" in note)
+        sk, note = select_affected(gs, ["x/a.rs", ".discovery/dossiers/W-1.md", ".agent-staging/r.md"])
+        check("select_affected: pipeline paths (.discovery, .agent-staging) never make every gate run",
+              sk == {"py": "skipped: no changed paths"} and "maps to no gate" not in note)
         sk, _ = select_affected(gs, [])
         check("select_affected: no changed path skips every path-known gate, never the unknown one",
               set(sk) == {"rust", "py"})
