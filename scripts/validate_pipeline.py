@@ -790,6 +790,7 @@ def _review_emit(rep: Report, rule: str, where: str, msg: str) -> None:
 def _path_owned(path: str, owned: list[str]) -> bool:
     norm = os.path.normpath(path)
     for o in owned:
+        o = o.strip().strip("`")  # a package table may wrap each path in backticks
         on = os.path.normpath(o.rstrip("*").rstrip("/")) if o.endswith(("*", "/")) else os.path.normpath(o)
         if norm == on or norm.startswith(on.rstrip("/") + os.sep):
             return True
@@ -3199,6 +3200,9 @@ def selftest_review_rules() -> bool:
                                               crit, rows).defects),
         ("a path mentioned in a sentence is no ownership demand", not rep_of(check_contract_covers_paths, mention, "",
                                                                          rows).defects),
+        ("a backticked owned path counts as owned", not rep_of(check_contract_covers_paths, "```x\n```\n", crit_bad,
+                                                             [(n, [f"`{p}`" for p in ps] + ["`tests/other/test_s.py`"])
+                                                              for n, ps in rows]).defects),
         ("an owner annotation outside every package", len(rep_of(check_contract_covers_paths, "```x\n```\n", crit_bad,
                                                                     rows).defects) == 1),
         ("an approach with a rejected option passes", not rep_of(check_approach, "Use a lock.\n\nRejected: a queue.").defects),
