@@ -1942,9 +1942,10 @@ class Runner:
         self.bg_cmds_only = bool(live) and all(x == "Bash" for x in tools)
         return live
 
-    def take_slot(self, first: bool = False, rehome: bool = False) -> bool:
+    def take_slot(self, first: bool = False, rehome: bool = False, first_why: str = "answered") -> bool:
         """Wait for a run slot (max_live); False when the run was stopped while it waited. `first`: the owner just
-        answered this run, so it queues ahead of every run not answered (it already waited on the owner). `rehome`: the
+        answered this run, so it queues ahead of every run not answered (it already waited on the owner), or a paused stage
+        resumes (`first_why`: it held a slot until the pause and is not sent behind the runs started meanwhile). `rehome`: the
         run is about to start a stage in a fresh session (nothing to resume), so the slot goes with the account that has the
         most paced headroom, not the one it used last; a run with a session to resume keeps its account."""
         free0, floor0 = disk_free_gib(self.root), disk_floor()
@@ -2008,7 +2009,7 @@ class Runner:
                 since = now()
                 mine = queue_order({"queued_since": since, "queued_first": first})
                 self.save(state="queued", queued_since=since, queued_first=first or None)
-                self.event(f"queued{' first (a merge-queue run)' if queue_run else ' first (answered)' if first else ''}: {held} of {cap} runs are working ({why}); "
+                self.event(f"queued{' first (a merge-queue run)' if queue_run else ' first (' + first_why + ')' if first else ''}: {held} of {cap} runs are working ({why}); "
                            f"{how}; this one starts when a slot frees", "queued")
             self.keepalive_tick()
             time.sleep(float(os.environ.get("ASD_RUNNER_SLOT_POLL") or 10))
@@ -3381,6 +3382,7 @@ class Runner:
         kill_tries = 0  # outside kills in a row; likewise
         stall_tries = 0  # stalls of one stage in a row; the third goes to the owner
         lo_n = 0         # sign-out failures in a row that the auth check did not confirm
+        resume_first = ""  # set when a paused stage (network error, usage limit) runs again: it queues first
         while True:
             if self.stopping:
                 return self.finish("stopped", "stopped", 3)
@@ -3388,7 +3390,11 @@ class Runner:
                 return self.finish("stopped", f"--max-stages {self.max_stages} reached", 4)
             started += 1
             self.save(stage=started, questions=[])
-            if not self.take_slot(rehome=True):
+            # A pause frees the slot (the census counts only working runs); the stage it resumes held one, so it goes
+            # before the runs queued meanwhile, not behind them (podcast 2026-11-20: three resumed runs waited 2-6 h).
+            took = self.take_slot(first=bool(resume_first), rehome=True, first_why=resume_first or "answered")
+            resume_first = ""
+            if not took:
                 return self.finish("stopped", "stopped", 3)
             if started == 1 and self.command in ("plan", "work-on") and not self.items and not SEED_RE.fullmatch(self.dossier):
                 # The launch check ran before the queue: a seed run may have claimed this id while this run waited for a
@@ -3494,6 +3500,7 @@ class Runner:
                         return self.finish("stopped", "stopped", 3)
                     self.save(resumes_at=None)
                     self.event(f"resumed after the network error; stage {started} again", "running")
+                    resume_first = "resumes after a network error"
                     started -= 1
                     continue
                 detail = f"{'sign-in refused' if auth_outage(detail) else 'network errors'} on {limit_n} retries in a row: {detail}"
@@ -3522,6 +3529,7 @@ class Runner:
                     return self.finish("stopped", "stopped", 3)
                 self.save(resumes_at=None)
                 self.event(f"resumed after the usage limit; stage {started} again", "running")
+                resume_first = "resumes after the usage limit"
                 started -= 1
                 continue
             self.save(state="failed")
@@ -4935,6 +4943,10 @@ def selftest() -> int:
             rq_ = _Q(); rq_.command = cmd
             Runner.take_slot(rq_)  # pyright: ignore[reportArgumentType]
             queued_first[cmd] = [c[1].get("queued_first") for c in rq_.calls if c[0] == "save" and c[1].get("state") == "queued"]
+        rq_ = _Q(); rq_.command = "work-on"
+        Runner.take_slot(rq_, first=True, rehome=True, first_why="resumes after a network error")  # pyright: ignore[reportArgumentType]
+        check("slots: a stage resuming after a pause queues first",
+              [c[1].get("queued_first") for c in rq_.calls if c[0] == "save" and c[1].get("state") == "queued"] == [True])
         if saved_poll is None: os.environ.pop("ASD_RUNNER_SLOT_POLL")
         else: os.environ["ASD_RUNNER_SLOT_POLL"] = saved_poll
         check("slots: a run the merge queue started (resolve-merge, after-merge) queues first, an ordinary run does not",
@@ -6324,7 +6336,8 @@ def selftest() -> int:
               all(r in sp["allow"] for r in STUB_OWN_MERGE_ALLOW) and "Bash(gh pr merge:*)" in sp["deny"] and senv.get("ASD_STUB_BRANCH") == "stub/2026-11-18")
         wenv = rk.child_env(); wa = argv_of(ASD_RUNNER_LEAN=None, ASD_RUNNER_COMPACT_WINDOW="0", ASD_RULINGS_DIR=rulings_tmp)
         check("not a stub run: no stub merge allow, no ASD_STUB_BRANCH",
-              "stub_own_merge" not in " ".join(wa) and "ASD_STUB_BRANCH" not in wenv)
+              not any(r in json.loads(wa[wa.index("--settings") + 1]).get("permissions", {}).get("allow", []) for r in STUB_OWN_MERGE_ALLOW)
+              and "ASD_STUB_BRANCH" not in wenv)   # the rules prompt names the script on every run; only the allow rule counts
         check("rulings: none stored, none passed", "permissions" not in json.loads(argv_of(ASD_RUNNER_LEAN=None, ASD_RUNNER_COMPACT_WINDOW="0", ASD_RULINGS_DIR=rulings_tmp)[argv_of(ASD_RUNNER_LEAN=None, ASD_RUNNER_COMPACT_WINDOW="0", ASD_RULINGS_DIR=rulings_tmp).index("--settings") + 1]))
         # ---- the session-start opt-outs: each on by default under lean, each with its own switch ----
         env_of = lambda **e: (lambda saved: (os.environ.update({k: v for k, v in e.items() if v is not None}), [os.environ.pop(k, None) for k, v in e.items() if v is None],
