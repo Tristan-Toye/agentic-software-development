@@ -37,7 +37,7 @@ the `queued` state, the account routing and every owner question apply unchanged
    that run is done and no item is still open, or it had none to begin with. An item still open after the run, whether
    one it was launched with or one it added itself, gets a follow-up /fix-deferred, never an owner pause (auto work runs
    autonomously), at most 2 per member (`fix_rounds`); after that the member is finished and the next cycle adopts the dossier.
-5. When every member is finished: the repository's non-code PRs are queued (`merge_docs_prs.py merge`, the "Merge all"
+5. When every member is finished: the repository's non-code PRs, into development or an open stub, are queued (`merge_docs_prs.py merge`, the "Merge all"
    button) and the script waits until each one is merged; then the stub's Integrate (`merge_dossier.py --integrate`)
    runs and the script waits for it to reach /stub; then land_stub.py merges the stub's PR when its conditions hold.
 6. That merge is the next START.
