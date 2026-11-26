@@ -98,13 +98,6 @@ truncation still has the verdict, then the detail:
   `file-gate`, and `file gates green` / `FILE-GATE FAILED` joins the RETURNED
   line. The orchestrator sends the failure back to that author in the same wave
   as a CORRECTION;
-- with `--gates FILE` (the run's gates file): `gates: green receipt <time> on
-  <head>` when `run_gates.py` left a green receipt for exactly this tree, and
-  `, gates green (receipt)` joins the RETURNED line; `gates: no receipt for
-  this tree` otherwise. Information, never a flag: a build-mode implementer
-  owes no gate run, and a fix-mode one that skipped it is caught by the
-  orchestrator's own `run_gates.py` call, which runs the gates when no receipt
-  matches and reuses it when one does;
 - with `--log DOSSIER --agent ID`: the mechanical half of the build-log line is
   appended through `dossier_edit.py` and echoed:
   `<ID> RETURNED: <sha> on <branch>, <files>, <n> unimplemented left, hash stable,
@@ -781,7 +774,6 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--file-gates", metavar="FILE",
                     help="a gates file of the repository's file-level static checks (those that read $GATE_PATHS); run over the paths the return wrote, a failure flags it FILE-GATE")
     ap.add_argument("--file-gate", default="", metavar="NAMES", help="with --file-gates: only these gate names (comma list)")
-    ap.add_argument("--gates", metavar="FILE", help="the run's gates file: report whether run_gates.py left a green receipt for this tree")
     ap.add_argument("--uncommitted", action="store_true",
                     help="the agent writes files and never commits (document-drafter): owned files are expected dirty, no commit is expected")
     ap.add_argument("--preexisting", metavar="FILE",
@@ -837,14 +829,6 @@ def main(argv: list[str] | None = None) -> int:
             return 2
 
     out, flags, parts = verify(args)
-    if args.gates:
-        rc, lines = script("run_gates.py", args.gates, "--root", os.path.abspath(args.root), "--receipt")
-        if rc == 0:
-            out.append("gates: " + (lines[-1].strip().removeprefix("run_gates: ")[:140] if lines else "green receipt"))
-            parts.append("gates green (receipt)")
-        else:
-            out.append("gates: no receipt for this tree" + ("" if rc == 4 else f" (run_gates exit {rc})"))
-
     if args.release:
         cmd = ["release", "--provider", args.provider, "--model", args.model, "--holder", args.release]
         if args.slot:
@@ -938,18 +922,6 @@ def selftest() -> int:
             check("#431: a subject without the dossier ID is not flagged", "COMMIT-ID-LEAK" not in out)
             check("stubs left flag the return (an implementer must leave none)", rc == 1 and "FLAGGED stubs" in out)
             check("output is bounded", len(out.splitlines()) <= MAX_LINES)
-
-            # --- --gates: a green run_gates receipt for this tree is reported, never required ---
-            gates_file = os.path.join(tmp, "gates.txt")
-            put(tmp, "gates.txt", "ok: true\n")
-            rc, out = call(base_args + ["--gates", gates_file, "--print-line", "--agent", "P1"])
-            check("--gates without a receipt says so and flags nothing new",
-                  "gates: no receipt for this tree" in out and "gates green" not in out and "FLAGGED stubs" in out
-                  and "gates" not in out.split("verdict:")[1].splitlines()[0])
-            script("run_gates.py", gates_file, "--root", root, "--log-dir", os.path.join(tmp, "gl"))
-            rc, out = call(base_args + ["--gates", gates_file, "--print-line", "--agent", "P1"])
-            check("--gates with a green receipt reports it and joins the RETURNED line",
-                  "gates: green receipt" in out and "gates green (receipt)" in out.split("RETURNED-LINE:")[1].splitlines()[0])
 
             # --- --file-gates (#489): the repository's file-level gates over the paths the return wrote ---
             put(tmp, "fg.txt", 'refused-pattern: ! grep -n "unimplemented" $GATE_PATHS\nclean-pattern: ! grep -n "ZZZ-NEVER-WRITTEN" $GATE_PATHS\n')

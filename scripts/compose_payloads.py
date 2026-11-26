@@ -689,9 +689,10 @@ def hook_outputs_block(specs: list[str]) -> str:
 
 def gates_test_command(root: str, dossier_text: str, dossier_id: str, since: str = "",
                        run_root: str = "") -> str | None:
-    """MODE fix, no --test-command: the run's whole gates file as one command
-    (`run_gates.py FILE --root X`), so a fix round is never narrower or stricter
-    than the GATES: list of Phase 2. The file is the dossier's `GATES: <file> —`
+    """MODE fix, no --test-command: the run's gates file as one command that runs the
+    implementer's share only: compile, lint and the tests of its own paths
+    (`run_gates.py FILE --root X --round --round-kinds compile,lint --affected-since REV`).
+    The full list is CI's. The file is the dossier's `GATES: <file> —`
     line, else `.discovery/analysis/gates-<ID>.txt`; None (the placeholder stays)
     when the run recorded `GATES: none` or the file is not on disk."""
     m = re.search(r"^\s*[-*]?\s*GATES:\s*(\S+)\s+—", dossier_text, re.M)
@@ -705,8 +706,9 @@ def gates_test_command(root: str, dossier_text: str, dossier_id: str, since: str
         return None
     cmd = "python3 %s %s --root %s" % (
         os.path.join(os.path.dirname(os.path.abspath(__file__)), "run_gates.py"), path, run_root or root)
-    # A fix implementer runs only the gates its own changed paths touch; the one full run is the
-    # orchestrator's, after the merge (--affected-since REV: run_gates.py, "Path-affected gates").
+    # An implementer runs compile, lint and the gates its own changed paths touch (its package's tests);
+    # the round check and the full list are the orchestrator's and CI's (run_gates.py, "The round check").
+    cmd += " --round --round-kinds compile,lint"
     return cmd + " --affected-since %s" % since if since else cmd
 
 
@@ -3228,7 +3230,7 @@ def selftest() -> int:
         rc, g2, out = run_compose("G2.md", fix_args + ["--test-command", "pytest -q"])
         g2_text = read_text(g2) if rc == 0 else ""
         check("a --test-command runs after the gates, never instead of them",
-              rc == 0 and re.search(r"gates-W-014\.txt --root %s && python3 \S+run_tests\.py --log \S+ -- bash -c 'pytest -q'"
+              rc == 0 and re.search(r"gates-W-014\.txt --root %s --round --round-kinds compile,lint && python3 \S+run_tests\.py --log \S+ -- bash -c 'pytest -q'"
                                     % re.escape(root), g2_text) is not None, out)
         rc, g4, out = run_compose("G4.md", fix_args + ["--set", "TEST_COMMAND=make check"])
         check("--set TEST_COMMAND replaces it whole",
@@ -3777,7 +3779,7 @@ def selftest() -> int:
               and ("WORKTREE_DIR: %s-P1" % root) in wt_text and wt_items[0]["base"] == head
               and all(o.startswith(root + "-P1/") for o in wt_items[0]["owned"]), out_io.getvalue() + str(wt_items)[:300])
         check("a fix payload's TEST_COMMAND runs the gates affected since the base, in the package's worktree",
-              ("gates-W-014.txt --root %s-P1 --affected-since %s" % (root, head)) in wt_text, wt_text[-900:])
+              ("gates-W-014.txt --root %s-P1 --round --round-kinds compile,lint --affected-since %s" % (root, head)) in wt_text, wt_text[-900:])
         if os.path.isdir(root + "-P1"):
             subprocess.run(["git", "-C", root, "worktree", "remove", "--force", root + "-P1"], capture_output=True)
         os.makedirs(root + "-P1", exist_ok=True)

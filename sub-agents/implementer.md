@@ -141,9 +141,10 @@ When your prompt is `PAYLOAD_FILE: <path>` (with `PAYLOAD_SHA256`), read that fi
    `until`/`while` loop, and never check progress in repeated calls: every such
    turn costs a full context read and shortens nothing. A run that finishes
    inside one call needs no `--detach`.
-   A green `run_gates.py` run leaves a receipt for this exact tree, so the
-   orchestrator's own gate run on your commit reuses it instead of running
-   the list again — another reason not to touch the tree after it.
+   Run only the short, foreground checks of your own package: compile, lint and its
+   existing tests (in a fix round also the named new tests, or the tests covering
+   your package after a review change). Never the full gates list or the full
+   suite: the orchestrator's round check and the PR's CI run those.
 6. **Follow `STANDARDS`.** A deviation needs a reason, in your report.
 7. **Stay inside `PACKAGE`.** An improvement you notice elsewhere goes in your
    report as a suggestion, never in a commit.
