@@ -5,6 +5,7 @@ import { appendFileSync, existsSync, mkdirSync, openSync, readdirSync, statSync,
 import { AnsweredError, appendOwner, idForThread, readAll, readAllAsync, readQuestion, readSidecarAsync, readSidecar, storeDir, writeSidecar, type Line, type Question } from "./store.ts"
 import { PAGE } from "./page.ts"
 import { addRuling, readRulings, removeRuling } from "./rulings.ts"
+import { sweepOf } from "./patternsweep.ts"
 import { buildLog, getRuns, ownerRulingsFile, PHASE_NAMES, questionRepo, readDossier, readDossierAsync, shRun, undecidedDeferred, type Run } from "./runs.ts"
 import { getStubs, openWorkHtml, recordFile, refreshAfterControl } from "./stubs.ts"
 import { canIntegrate, checkRule, dossierPage, integrationPhase, integrationStopped, markIntegrating, readBlocks, readConversation, readIntegrate, readRunner, readRunnerAsync, readUpdates, readUpdatesAsync, readUpdatesSig, renderMarkdown, readViewCache, runnerActive, runsDir, writeViewCache } from "./runstore.ts"
@@ -763,6 +764,8 @@ export async function handle(req: Request): Promise<Response> {
   }
   // Integrate a stub: its finished dossiers through the merge queue (FIFO), then /stub on the runner; and Stop/Resume of
   // that /stub run. POST {repo, branch, action: integrate|stop|resume}.
+  const ps = path.match(/^\/api\/pattern-sweep\/([\w.-]+)$/)
+  if (req.method === "GET" && ps) return json(sweepOf(ps[1]))
   if (req.method === "GET" && path === "/api/autowork") return json({ repos: viewsFor((await getRunsA()).runs) })
   if (req.method === "POST" && path === "/api/autowork") {
     const origin = req.headers.get("origin")
