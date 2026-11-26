@@ -117,7 +117,13 @@ question:
    product-code fix) it also **opens an architecture-map refresh pull request
    into the stub and merges it itself** (Step 4; a failure of it never blocks
    the integration). The
-   yes covers these merges and nothing else. Nothing else is merged by this command: the stub pull request
+   yes covers these merges and nothing else, so they are never an owner
+   question. Each one is `python3 ${PLUGIN_ROOT}/scripts/stub_own_merge.py <pr>`,
+   never `gh pr merge` (the runner refuses that in every session): the script
+   merges only into this run's stub and only this run's own branches
+   (`fix/<ID>-stub<date>-<round>`, `chore/map-refresh-<date>[-integrate]`,
+   `chore/stub-<date>-sync-dev`) whose checks are green. A `REFUSED` line is
+   not a question either: wait for or fix what it names. Nothing else is merged by this command: the stub pull request
    into `development` is the user's, or `land_stub.py`'s when the user turned it on
    for this repository.
 4. It **iterates until the full stack run is green**: as many
@@ -268,7 +274,7 @@ the stub. The pull request is open, so the stub is closed to new dossiers.
 2. `nothing-changed` or `skipped`: log it in the record and go on; no pull
    request, no cost.
 3. `opened` or `exists`: `python3 ${PLUGIN_ROOT}/scripts/wait_ci.py --pr
-   <pr>`, then **you merge it** into the stub exactly as Step 8 merges a fix
+   <pr>`, then **you merge it** into the stub with `stub_own_merge.py <pr>`, exactly as Step 8 merges a fix
    pull request — the yes from the gates covers this merge and nothing else.
    Re-fetch the stub; Steps 5 and 6 then cover that head.
 4. **Again after a product-code fix.** Whenever Step 8 merges a fix that
@@ -390,7 +396,8 @@ reports a green full run:
    from `prepare_wave.py`, its return checked by `verify_return.py`, its
    `TEST_COMMAND` the failing test, focused. Branch
    `fix/<ID>-stub<date>-<round>`, pull request into the stub, the five
-   checks through `wait_ci.py`, then **you merge it** — the yes from the
+   checks through `wait_ci.py`, then **you merge it** with
+   `stub_own_merge.py <pr>` — the yes from the
    gates covers exactly this merge and nothing else.
 4. **Review the fix.** One `reviewer` round, `style` and `architecture`,
    on the fix diff; its change requests go back to the same implementer.

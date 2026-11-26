@@ -398,7 +398,11 @@ the recorded checkpoints.
 - **`--command stub --items stub/<date>`:** runs `/stub <branch>` under the
   key `<repo>.stub-<date>` (the branch with `/` as `-`), so the stub page and
   the hooks' stub records share one timeline. The dashboard's Integrate starts
-  it after the merge queue has merged the stub's finished dossiers.
+  it after the merge queue has merged the stub's finished dossiers. Its
+  sessions get `ASD_STUB_BRANCH=<branch>` and an allow rule for
+  `scripts/stub_own_merge.py`, the one way the run merges: only its own fix,
+  map-refresh and development-sync pull requests, only into that stub, only
+  green (`gh pr merge` stays in the deny list of every session).
 - **`--command plan`:** runs `/plan <ID>` for a planned dossier, under its own
   key; the dashboard's Plan button starts it.
 - **`--command plan --items D-n`:** runs `/plan <ID> D-n` for one deferred

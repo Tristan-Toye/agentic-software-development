@@ -113,7 +113,7 @@ You run under the dossier runner and nobody reads the terminal.
 - Run every test through scripts/run_tests.py and every gate list through scripts/run_gates.py (`--path-prepend DIR` / `--env-script FILE` for a toolchain off the shell PATH, `--detach` then `--wait ID` for a long run), never through a script or command of your own: their result lines are how the owner's timeline shows a suite going green or red. Run only the tests the command's step names: under /work-on and /fix-deferred with SUITE-MODE `stub`, that is the new and affected tests and the pull request's CI, never the full workspace or `--stack` suite, which only /stub runs.
 - Never end a stage (or the run) while a background command, workflow or agent you started is still running: it dies with this process and no notification reaches the next stage. Wait for its notification and take its result first; the runner holds a stage end that comes too early, once. A task you stopped or killed yourself needs no wait: end the stage, and the runner cuts off whatever is left and logs it. Never ask the owner whether to end the stage, restart or stop a background task. If a checkpoint must still name work in flight, say how the next stage tells it finished or died (its report file, its branch or worktree, its output file).
 - Gates already settled for this run: the worktree gate is yes, and {time_logging}
-- The owner's Start is standing authority (references/owner-questions.md, "What is worth asking"): pushing the dossier's own branch and opening or updating its draft PR into the base or the accepting stub is yes; so is a graduation issue in the plugin repository, and committing a repository rule from this build on the dossier's branch (the PR ratifies it). Carry out the readings, defaults and rulings the dossier already records; never ask to confirm them. Ask only technical, architectural or product design questions the dossier leaves open, issues you cannot resolve in scope, and actions outside that authority (a merge, a push to a protected branch, a force-push, Jira writes, deleting what is not the run's own). Do the authorized ones, log them, and name them in your next update.
+- The owner's Start is standing authority (references/owner-questions.md, "What is worth asking"): pushing the dossier's own branch and opening or updating its draft PR into the base or the accepting stub is yes; so is a graduation issue in the plugin repository, and committing a repository rule from this build on the dossier's branch (the PR ratifies it). Carry out the readings, defaults and rulings the dossier already records; never ask to confirm them. Ask only technical, architectural or product design questions the dossier leaves open, issues you cannot resolve in scope, and actions outside that authority (a merge, except a /stub run's own pull requests into its stub, which it merges with scripts/stub_own_merge.py and never asks about; a push to a protected branch, a force-push, Jira writes, deleting what is not the run's own). Do the authorized ones, log them, and name them in your next update.
 - The plugin's references (`references/work-on/phase-*.md`, `formats/*`, `runner.md`) are long and the same in every stage: read only the section your step needs (`ref_section` with the document's short name, `phase-4` or `formats/dossier`, and a heading or `--list`), not whole files; the phase file you start a phase with is the one you read whole, and never the same section twice in one stage.
 - Phase 2 takes its stub from `python3 scripts/stub_target.py --root R` (the plugin's scripts). Exit 3 (`wait <stub>`) means that stub is being integrated and no new one may be cut until it is in development: end the turn with the line `RUNNER: WAITING stub`; the runner waits without tokens and sends `STUB READY: <branch>` once the new stub is cut. Never cut a stub yourself.
 - A broken environment (the Lima VM stopped or unreachable, a shared docker compose service unhealthy, the disk low) is not an owner question: end the turn with the single line `RUNNER: ENV <vm|stack|disk> <short detail>` and nothing after it. The runner repairs vm and stack when the owner enabled that and answers `RUNNER ENV <kind>: repaired ...` (carry on) or `RUNNER ENV vm: not repaired ...` (then ask the owner as usual). For `stack` the runner never answers with an owner question: a bring-up that a foreign or leftover compose project refuses (`foreign_project_state owner=...`, `suite_window_active holder=...`) is reported as `RUNNER: ENV stack <the refusal line>`; the runner tears a leftover project down itself when it can prove it dead and answers `repaired`, otherwise it answers to skip your live stack tests, defer those criteria to the /stub full suite and head the PR note with `STACK-ENV: skipped — ...`. You never tear down, bring up or restart a shared stack project yourself (opmode-stack.sh, up.sh, compose) and never ask the owner about it. A disk is never repaired automatically. A stale shared fake-llm fixture is the runner's: run tests through `run_tests.py --vm` (it rebuilds from the persistent checkout or skips the DB tests under `STACK-ENV: skipped`); never rebuild or restart a shared stack service from your worktree, and never ask the owner about it.
@@ -836,6 +836,10 @@ RULING_PROBES = ["gh pr merge 1", "gh pr merge 1 --squash --auto", "gh api -X PU
                  "git push --force-with-lease origin x", "git push --mirror", "git push origin production",
                  "git push origin main", "git push origin master", "git push origin development",
                  "git push origin --delete production", "cat ~/.ssh/id_rsa", "cat ~/.aws/credentials", "sops -d secrets.yaml"]
+# A /stub run merges its own fix, map-refresh and development-sync pull requests into its own stub (primary-agents/stub.md):
+# the owner's go-ahead covers exactly those merges. `gh pr merge` stays denied; the run gets this one guarded script, which
+# checks the base (ASD_STUB_BRANCH, child_env), the head branch and green checks before it merges (scripts/stub_own_merge.py).
+STUB_OWN_MERGE_ALLOW = [f"Bash(python3 {HERE}/stub_own_merge.py:*)", "Bash(python3 */scripts/stub_own_merge.py:*)"]
 SECRET_RULE_RE = re.compile(r"\.ssh|\.aws|\.gnupg|id_rsa|id_ed25519|\.env\b|secrets?\.|credentials|keychain", re.I)
 
 
@@ -1707,7 +1711,7 @@ class Runner:
         cmd += ["--model", model]
         # The keep-alive resume ping is claude_cmd() + --resume, so everything that shapes the prefix is built here only.
         lean = (os.environ.get("ASD_RUNNER_LEAN") or "1").strip() != "0"
-        rules = repo_rulings(main_repo_name(self.root))
+        rules = repo_rulings(main_repo_name(self.root)) + (STUB_OWN_MERGE_ALLOW if self.command == "stub" else [])
         if lean or rules:
             st = json.loads(lean_settings(self.root)) if lean else {}
             if rules:   # the owner's standing rulings for this repo; the deny list is passed with them and outranks them
@@ -1802,6 +1806,9 @@ class Runner:
     def child_env(self) -> dict:
         """The environment of a claude child of this run (the stage's and a keep-alive resume's): run key and account."""
         env = dict(os.environ, ASD_RUN_KEY=self.key)
+        env.pop("ASD_STUB_BRANCH", None)
+        if self.command == "stub" and self.items:   # the one stub stub_own_merge.py may merge into
+            env["ASD_STUB_BRANCH"] = self.items.strip()
         env.update(self.driver_exports)   # an ASD_DRIVER_* already in the runner's environment is never in here: it wins
         acct = getattr(self, "account", None)
         if acct and os.path.abspath(acct["dir"]) != os.path.abspath(os.path.expanduser("~/.claude")):
@@ -6304,6 +6311,20 @@ def selftest() -> int:
         check("rulings: they apply with lean off too, and without a lean flag the rest of the argv is unchanged",
               json.loads(rp[rp.index("--settings") + 1])["permissions"]["allow"] == rs["permissions"]["allow"] and "--disallowedTools" not in rp)
         os.remove(os.path.join(rulings_tmp, f"{rrepo}.json"))
+        # ---- a /stub run: its one guarded merge script is allowed, gh pr merge stays denied, ASD_STUB_BRANCH names its stub ----
+        was = (rk.command, rk.items)
+        rk.command, rk.items = "stub", "stub/2026-11-18"
+        try:
+            sa = argv_of(ASD_RUNNER_LEAN=None, ASD_RUNNER_COMPACT_WINDOW="0", ASD_RULINGS_DIR=rulings_tmp)
+            sp = json.loads(sa[sa.index("--settings") + 1])["permissions"]
+            senv = rk.child_env()
+        finally:
+            rk.command, rk.items = was
+        check("stub run: stub_own_merge.py is allowed, gh pr merge is still denied, and the session knows its stub",
+              all(r in sp["allow"] for r in STUB_OWN_MERGE_ALLOW) and "Bash(gh pr merge:*)" in sp["deny"] and senv.get("ASD_STUB_BRANCH") == "stub/2026-11-18")
+        wenv = rk.child_env(); wa = argv_of(ASD_RUNNER_LEAN=None, ASD_RUNNER_COMPACT_WINDOW="0", ASD_RULINGS_DIR=rulings_tmp)
+        check("not a stub run: no stub merge allow, no ASD_STUB_BRANCH",
+              "stub_own_merge" not in " ".join(wa) and "ASD_STUB_BRANCH" not in wenv)
         check("rulings: none stored, none passed", "permissions" not in json.loads(argv_of(ASD_RUNNER_LEAN=None, ASD_RUNNER_COMPACT_WINDOW="0", ASD_RULINGS_DIR=rulings_tmp)[argv_of(ASD_RUNNER_LEAN=None, ASD_RUNNER_COMPACT_WINDOW="0", ASD_RULINGS_DIR=rulings_tmp).index("--settings") + 1]))
         # ---- the session-start opt-outs: each on by default under lean, each with its own switch ----
         env_of = lambda **e: (lambda saved: (os.environ.update({k: v for k, v in e.items() if v is not None}), [os.environ.pop(k, None) for k, v in e.items() if v is None],
