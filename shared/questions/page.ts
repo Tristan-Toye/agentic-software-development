@@ -1328,7 +1328,7 @@ function sideColumn(repo) {
     h('ul', { class: 'tree' }, merged.map(s => h('li', {}, [h('a', { class: 'sub-item', href: hrefStub(repo, s.branch) }, [h('span', { class: 'sid mono' }, [s.branch]), h('span', { class: 'sname', title: s.branch }, [s.dossiers.length + ' dossier(s)'])])])))]));
   return h('section', { class: 'scol full', 'data-k': 'sec:stubs' }, kids);
 }
-/* Non-code PRs into development: plans and research documents, which may skip the stub. Each row says whether it can
+/* Non-code PRs into development or an open stub: plans and research documents. Each row says whether it can
    merge now and why not; Merge all merges the ready ones by script, oldest first. */
 function docPrsView(repo) {
   const st = S.docPrs[repo];
@@ -1337,9 +1337,9 @@ function docPrsView(repo) {
   const prs = st.prs || []; if (!prs.length && !st.merging && !st.error) return null;
   const ready = prs.filter(p => p.ready).length; const queueable = prs.filter(p => (!p.draft || p.draftReady) && !(p.queue && ['queued', 'waiting', 'fixing', 'batching', 'rerunning', 'resolving', 'merging'].includes(p.queue.state))).length;
   const rows = prs.map(p => h('a', { class: 'srow', href: p.url, target: '_blank', rel: 'noopener', 'data-k': 'dp:' + p.number }, [h('span', { class: 'sid mono' }, ['#' + p.number]),
-    h('span', { class: 'sname' }, [h('span', {}, [(p.dossier ? p.dossier + ' · ' : '') + p.title]), h('span', { class: 'small mut rsub' }, [p.kind + ' · ' + p.head])]),
+    h('span', { class: 'sname' }, [h('span', {}, [(p.dossier ? p.dossier + ' · ' : '') + p.title]), h('span', { class: 'small mut rsub' }, [p.kind + ' · ' + p.head + (p.base && p.base !== 'development' ? ' → ' + p.base : '')])]),
     h('span', { class: 'sright' }, [docPrState(p)])]));
-  const head = [h('h2', {}, ['Non-code PRs into development']), h('span', { class: 'small mut' }, [prs.length + ' open · ' + ready + ' ready']), h('span', { class: 'grow' }),
+  const head = [h('h2', {}, ['Non-code PRs']), h('span', { class: 'small mut' }, [prs.length + ' open · ' + ready + ' ready']), h('span', { class: 'grow' }),
     h('button', { class: 'btn sm', type: 'button', 'data-act': 'docprs-refresh', 'data-repo': repo }, ['↻']),
     h('button', { class: 'btn sm primary', type: 'button', 'data-act': 'docprs-merge', 'data-repo': repo, disabled: st.merging || !queueable ? true : null, title: 'Puts every open plan and docs PR in the merge queue, oldest first. The queue fixes what blocks each one (a taken dossier number renumbered, red checks re-run, then the dossier\'s agent for a conflict or a check still red) and merges it. It never touches a stub.' }, [st.merging ? 'Queueing…' : 'Merge all (' + queueable + ')'])];
   return h('section', { class: 'sec', 'data-k': 'sec:docprs' }, [h('div', { class: 'sechd' }, head),

@@ -552,11 +552,14 @@ restarted server answers at once from them while its first scan runs.
     answered and Slack marks it so. A question a live run still waits on
     (runner.json: live pid, the question in its `questions`), an answered one
     and every design or product question are left alone.
-  - **Non-code PRs into development** (repo page, under the stubs): every
-    open `plan/*` or `docs/*` PR into `development`, the PRs that may skip the
-    stub, each with why it can or cannot merge now (`scripts/merge_docs_prs.py
+  - **Non-code PRs** (repo page, under the stubs): every
+    open `plan/*` or `docs/*` PR into `development` or into an open stub (a
+    `stub/*` still on origin whose PR into `development` has not merged; each
+    row shows its `base`; a PR into a merged or deleted stub or a feature
+    branch is left out), each with why it can or cannot merge now
+    (`scripts/merge_docs_prs.py
     list`): code files in it, a draft, a conflict, red or running checks, or a
-    dossier id that another open PR or `development` already has (two
+    dossier id that another open PR, `development` or its own stub already has (two
     concurrent plans can mint one number; renumber the later one with
     `validate_pipeline.py --finalize-ids`). **Merge all** puts every open
     non-draft one in the merge queue above, oldest first; each row shows its

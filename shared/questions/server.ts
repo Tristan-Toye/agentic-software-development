@@ -947,7 +947,7 @@ export async function handle(req: Request): Promise<Response> {
     emitChange("runs")
     return json({ ok: r.code === 0, text: (r.stdout || r.stderr).trim().replace(/^merge_dossier:\s*/, "") }, r.code === 0 ? 200 : 500)
   }
-  // Non-code PRs into development (plan/*, docs/*): the list with why each can or cannot merge, and "Merge all"
+  // Non-code PRs into development or an open stub (plan/*, docs/*): the list with why each can or cannot merge, and "Merge all"
   // (scripts/merge_docs_prs.py, in the background; no agent merges). The list is cached a minute: it asks gh per PR.
   const dp = path.match(/^\/api\/repo\/([\w.-]+)\/doc-prs(\/merge)?$/)
   if (dp) {

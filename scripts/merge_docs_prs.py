@@ -1,18 +1,22 @@
 #!/usr/bin/env python3
-"""List and merge a repository's non-code pull requests into development: plans and research documents.
+"""List and merge a repository's non-code pull requests: plans and research documents, into development or an open stub.
 
 The dashboard's "Non-code PRs" panel on the repo page and its "Merge all" button run this; no agent merges.
 
 # Usage
 
-    merge_docs_prs.py --root R list          # JSON: one row per open plan/* or docs/* PR into development
+    merge_docs_prs.py --root R list          # JSON: one row per open plan/* or docs/* PR into development or an open stub
     merge_docs_prs.py --root R merge [--dry-run]
     merge_docs_prs.py --selftest
 
+The base of a PR is one of: `development`, or an OPEN stub (a `stub/*` branch still on origin whose pull request into
+development has not merged; the rule scripts/stub_target.py uses). A PR into a merged or deleted stub, or into any other
+branch (a feature branch such as W-215's), is left out: it is not this panel's to merge. Each row carries its `base`.
+
 A row says whether the PR can merge now, and why not: `docsOnly` (every file under `.discovery/`, `docs/` or
 Markdown, the rule the repository's enforce-pr-source-development check applies), `draft`, `mergeable` (GitHub's
-CONFLICTING/MERGEABLE/UNKNOWN), `checks` (red, pending or green), and `dossier`: the dossier id the PR adds (a file already at the same path on development is an edit, never an added id), with
-`duplicate` when another open PR or development already has that id (two concurrent plans can mint the same number;
+CONFLICTING/MERGEABLE/UNKNOWN), `checks` (red, pending or green), and `dossier`: the dossier id the PR adds (a file already at the same path on the PR's base is an edit, never an added id), with
+`duplicate` when another open PR, development or the PR's own stub already has that id (two concurrent plans can mint the same number;
 the later one is renumbered with `validate_pipeline.py --finalize-ids`, never merged as it is).
 
 `merge` first marks a draft `plan/*` PR ready when its dossier says `status: ready` (a plan is final when opened;
@@ -60,10 +64,10 @@ def checks_of(rollup: list) -> str:
     return "green"
 
 
-def dev_files(root: str) -> set[str]:
-    """Dossier file paths already on origin/development (fetches it first)."""
-    subprocess.run(["git", "-C", root, "fetch", "-q", "origin", "development"], capture_output=True, timeout=120)
-    out = subprocess.run(["git", "-C", root, "ls-tree", "--name-only", "origin/development", ".discovery/dossiers/"],
+def dev_files(root: str, branch: str = "development") -> set[str]:
+    """Dossier file paths already on origin/BRANCH (fetches it first)."""
+    subprocess.run(["git", "-C", root, "fetch", "-q", "origin", branch], capture_output=True, timeout=120)
+    out = subprocess.run(["git", "-C", root, "ls-tree", "--name-only", f"origin/{branch}", ".discovery/dossiers/"],
                          capture_output=True, text=True, timeout=30).stdout
     return {line.strip() for line in out.splitlines() if ID_RE.match(line.strip())}
 
@@ -71,6 +75,18 @@ def dev_files(root: str) -> set[str]:
 def dev_ids(root: str) -> set[str]:
     """Dossier ids already on origin/development."""
     return {m.group(1) for f in dev_files(root) if (m := ID_RE.match(f))}
+
+
+def open_stubs(root: str, wanted: set[str]) -> tuple[set[str], str]:
+    """Which of the stub branches WANTED are open: still on origin and not merged into development (the rule
+    stub_target.py uses; an open stub accepts work or is being integrated). Returns (open ones, error)."""
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import stub_target
+    try:
+        on_origin = set(stub_target.stubs(root))
+        return {b for b in wanted if b in on_origin and stub_target.into_dev(root, b) != "merged"}, ""
+    except RuntimeError as e:
+        return set(), "cannot list the stubs: " + str(e)[:200]
 
 
 def dossier_ready(root: str, head: str, path: str) -> bool:
@@ -83,30 +99,43 @@ def dossier_ready(root: str, head: str, path: str) -> bool:
 
 
 def rows(root: str, merged_ids: set[str] | None = None) -> tuple[list[dict], str]:
-    rc, out = gh(root, "pr", "list", "--base", "development", "--state", "open", "--limit", "100",
-                 "--json", "number,headRefName,title,isDraft,mergeable,statusCheckRollup,files,url,createdAt")
+    rc, out = gh(root, "pr", "list", "--state", "open", "--limit", "200",
+                 "--json", "number,headRefName,baseRefName,title,isDraft,mergeable,statusCheckRollup,files,url,createdAt")
     if rc != 0:
         return [], "gh pr list failed: " + out[:200]
     try:
         prs = json.loads(out or "[]")
     except ValueError:
         return [], "gh pr list gave no JSON"
-    prs = sorted([p for p in prs if re.match(r"(plan|docs)/", p.get("headRefName", "")) and not p["headRefName"].startswith("plan/queue-batch-")], key=lambda p: p["number"])  # a batch PR is the queue's own
+    prs = [p for p in prs if re.match(r"(plan|docs)/", p.get("headRefName", "")) and not p["headRefName"].startswith("plan/queue-batch-")]  # a batch PR is the queue's own
+    # The base: development, or an open stub (still on origin, not merged into development). A PR into anything
+    # else (a merged or deleted stub, a feature branch) is left out: it is not ours to merge.
+    stub_bases = {p.get("baseRefName", "") for p in prs if re.match(r"stub/", p.get("baseRefName", ""))}
+    live, err = open_stubs(root, stub_bases) if stub_bases else (set(), "")
+    if err:
+        return [], err
+    prs = sorted([p for p in prs if (p.get("baseRefName") or "development") == "development" or p.get("baseRefName") in live], key=lambda p: p["number"])
     on_dev = dev_files(root)
-    taken = {m.group(1) for f in on_dev if (m := ID_RE.match(f))} | (merged_ids or set())   # ids merged in this run count even before the fetch shows them
+    base_files = {"development": on_dev, **{b: dev_files(root, b) for b in live}}
+    ids_of = lambda fs: {m.group(1) for f in fs if (m := ID_RE.match(f))}
+    taken = ids_of(on_dev) | (merged_ids or set())   # ids merged in this run count even before the fetch shows them
     seen: dict[str, int] = {}
     out_rows = []
     for p in prs:
+        base = p.get("baseRefName") or "development"
+        on_base = base_files[base]
         files = [f.get("path", "") for f in p.get("files") or []]
         code = [f for f in files if not DOC_RE.search(f)]
-        # A file already at the same path on development is an edit of that dossier, not an id the PR claims:
-        # only a file development does not have can clash (a different slug under a taken id still does).
+        # A file already at the same path on the PR's base is an edit of that dossier, not an id the PR claims:
+        # only a file its base does not have can clash (a different slug under a taken id still does).
         all_ids = sorted({m.group(1) for f in files if (m := ID_RE.match(f))})
-        ids = sorted({m.group(1) for f in files if (m := ID_RE.match(f)) and f not in on_dev})
+        ids = sorted({m.group(1) for f in files if (m := ID_RE.match(f)) and f not in on_base})
         dup = ""
         for i in ids:
             if i in taken:
                 dup = f"{i} is already on development"
+            elif i in ids_of(on_base):
+                dup = f"{i} is already on {base}"
             elif i in seen:
                 dup = f"{i} is also added by #{seen[i]}"
             else:
@@ -116,12 +145,12 @@ def rows(root: str, merged_ids: set[str] | None = None) -> tuple[list[dict], str
         draft_ready = bool(p.get("isDraft")) and p["headRefName"].startswith("plan/") and not code and bool(all_ids) and \
             all(dossier_ready(root, p["headRefName"], f) for f in files if ID_RE.match(f))
         r = {"number": p["number"], "head": p["headRefName"], "title": p.get("title", ""), "url": p.get("url", ""),
-             "kind": "plan" if p["headRefName"].startswith("plan/") else "docs", "dossier": ",".join(ids), "edits": sorted(f for f in files if ID_RE.match(f) and f in on_dev),
+             "kind": "plan" if p["headRefName"].startswith("plan/") else "docs", "dossier": ",".join(ids), "edits": sorted(f for f in files if ID_RE.match(f) and f in on_base), "base": base,
              "docsOnly": not code, "codeFiles": code[:5], "draft": bool(p.get("isDraft")), "mergeable": p.get("mergeable") or "UNKNOWN",
              "checks": checks_of(p.get("statusCheckRollup") or []), "duplicate": dup, "draftReady": draft_ready}
         why = ("changes code: " + ", ".join(code[:3])) if code else "draft" if r["draft"] and not draft_ready else \
             ("dossier id taken: " + dup + "; will renumber it on Merge all (validate_pipeline.py --finalize-ids)") if dup else \
-            "conflicts with development" if r["mergeable"] == "CONFLICTING" else \
+            f"conflicts with {base}" if r["mergeable"] == "CONFLICTING" else \
             "checks are red" if r["checks"] == "red" else "checks still running" if r["checks"] == "pending" else \
             "GitHub has not computed mergeability yet" if r["mergeable"] == "UNKNOWN" else ""
         r["ready"], r["blocked"] = not why, why
@@ -135,9 +164,9 @@ def rows(root: str, merged_ids: set[str] | None = None) -> tuple[list[dict], str
 
 
 def merge(root: str, dry: bool) -> int:
-    """Merge all: every open plan/docs PR into development (not a draft) joins the repository's merge queue, oldest
+    """Merge all: every open plan/docs PR (not a draft) into development or an open stub joins the repository's merge queue, oldest
     first. The queue's shared steps settle each one (GitHub's mergeability, a taken dossier id renumbered by script,
-    red checks re-run once, then the dossier's agent) and merge it by script. Nothing here touches a stub."""
+    red checks re-run once, then the dossier's agent) and merge it by script. This script never pushes to a stub itself."""
     rs, err = rows(root)
     if err:
         print(f"merge_docs_prs: {err}")
@@ -167,6 +196,9 @@ import json, os, sys
 d = os.environ["FAKE_DIR"]; a = sys.argv[1:]
 open(os.path.join(d, "calls.txt"), "a").write(" ".join(a) + "\n")
 prs = json.load(open(os.path.join(d, "prs.json")))
+if a[:2] == ["pr", "list"] and "--head" in a:   # stub_target.into_dev: the states of the PRs from this head into development
+    h = a[a.index("--head") + 1]
+    print(",".join(p.get("state", "OPEN") for p in prs if p["headRefName"] == h and p.get("baseRefName", "development") == "development")); sys.exit(0)
 if a[:2] == ["pr", "list"]:
     flag = os.path.join(d, "recompute")
     out = [p for p in prs if p.get("state", "OPEN") == "OPEN"]
@@ -204,7 +236,7 @@ def selftest() -> int:
         subprocess.run(["git", "init", "-q", root], check=True)
         open(os.path.join(tmp, "gh.py"), "w").write(FAKE)
         green = [{"conclusion": "SUCCESS"}]
-        P = lambda n, head, files, **kw: {"number": n, "headRefName": head, "title": f"t{n}", "url": "u", "isDraft": False, "mergeable": "MERGEABLE",
+        P = lambda n, head, files, **kw: {"number": n, "headRefName": head, "title": f"t{n}", "url": "u", "baseRefName": "development", "isDraft": False, "mergeable": "MERGEABLE",
                                           "statusCheckRollup": green, "files": [{"path": f} for f in files], **kw}
         prs = [P(436, "plan/a", [".discovery/dossiers/W-147-a.md"]), P(437, "plan/b", [".discovery/dossiers/W-147-b.md"]),
                P(438, "plan/c", [".discovery/dossiers/W-148-c.md"]), P(434, "docs/r", ["docs/r.md", "reading.html"]),
@@ -216,16 +248,27 @@ def selftest() -> int:
         prs += [P(443, "plan/edit", [".discovery/dossiers/W-210-fixture-swap.md"]),
                 P(444, "plan/slug", [".discovery/dossiers/W-211-other-slug.md"]),
                 P(445, "plan/new1", [".discovery/dossiers/W-300-n.md"]), P(446, "plan/new2", [".discovery/dossiers/W-300-n.md"])]
+        # plan PRs into stubs: 2026-11-18 is open (on origin, no merged PR into development) and holds W-400; 2026-11-10 is merged
+        # (branch still there) and 2026-11-01 deleted; W-215's feature branch is no stub at all
+        prs += [P(601, "plan/stub-new", [".discovery/dossiers/W-500-s.md"], baseRefName="stub/2026-11-18"),
+                P(602, "plan/stub-dup", [".discovery/dossiers/W-400-again.md"], baseRefName="stub/2026-11-18"),
+                P(603, "plan/merged-stub", [".discovery/dossiers/W-501-m.md"], baseRefName="stub/2026-11-10"),
+                P(604, "plan/gone-stub", [".discovery/dossiers/W-502-g.md"], baseRefName="stub/2026-11-01"),
+                P(605, "plan/feature", [".discovery/dossiers/W-503-f.md"], baseRefName="feat/w215"),
+                P(700, "stub/2026-11-10", ["src/a.rs"], state="MERGED"), P(701, "stub/2026-11-01", ["src/a.rs"], state="MERGED")]
         json.dump(prs, open(os.path.join(tmp, "prs.json"), "w"))
         git = lambda *a: subprocess.run(["git", "-C", root, "-c", "user.name=t", "-c", "user.email=t@t", *a], check=True, capture_output=True)
         os.makedirs(os.path.join(root, ".discovery", "dossiers"))
         for n in ("W-210-fixture-swap.md", "W-211-slug.md"):
             open(os.path.join(root, ".discovery", "dossiers", n), "w").write("---\nid: x\n---\n")
         git("add", "."); git("commit", "-q", "-m", "dev"); git("branch", "-M", "development"); git("remote", "add", "origin", root)
+        git("branch", "stub/2026-11-10"); git("checkout", "-q", "-b", "stub/2026-11-18")
+        open(os.path.join(root, ".discovery", "dossiers", "W-400-on-stub.md"), "w").write("---\nid: x\n---\n")
+        git("add", "."); git("commit", "-q", "-m", "stub"); git("checkout", "-q", "development")
         os.environ.update(ASD_GH_BIN=f"{sys.executable} {os.path.join(tmp, 'gh.py')}", FAKE_DIR=tmp, ASD_DOCPRS_POLL="0.05")
         rs, _ = rows(root)
         by = {r["number"]: r for r in rs}
-        check("list: only plan/* and docs/* PRs, oldest first", [r["number"] for r in rs] == [434, 436, 437, 438, 439, 440, 441, 442, 443, 444, 445, 446], str([r["number"] for r in rs]))
+        check("list: only plan/* and docs/* PRs into development or an open stub, oldest first", [r["number"] for r in rs] == [434, 436, 437, 438, 439, 440, 441, 442, 443, 444, 445, 446, 601, 602], str([r["number"] for r in rs]))
         check("list: a docs PR with code is not ready", not by[434]["ready"] and "reading.html" in by[434]["blocked"])
         check("list: the second PR with the same dossier id waits for renumbering", by[436]["ready"] and not by[437]["ready"] and "W-147" in by[437]["blocked"])
         check("list: a draft plan whose dossier is ready reads as ready, with a note", by[440]["ready"] and by[440]["draftReady"] and "marks it ready" in by[440]["note"], str(by[440]))
@@ -237,6 +280,10 @@ def selftest() -> int:
         check("list: a new file whose id development holds under another slug is still a taken id",
               not by[444]["ready"] and "W-211" in by[444]["duplicate"] and "will renumber" in by[444]["blocked"], str(by[444]))
         check("list: two PRs adding the same new id still clash", by[445]["ready"] and not by[446]["ready"] and "also added by #445" in by[446]["duplicate"], str(by[446]))
+        check("list: a plan PR into the open stub is listed, with its base, and is ready", 601 in by and by[601]["base"] == "stub/2026-11-18" and by[601]["ready"] and by[601]["dossier"] == "W-500", str(by.get(601)))
+        check("list: a PR into development says so in its base", by[436]["base"] == "development")
+        check("list: a PR into a merged stub, a deleted stub or a feature branch is left out", not ({603, 604, 605} & set(by)), str(sorted(by)))
+        check("list: a new id the stub already holds is a duplicate against the stub", 602 in by and not by[602]["ready"] and "W-400 is already on stub/2026-11-18" in by[602]["duplicate"], str(by.get(602)))
         import io, contextlib
         queued = []
         import merge_dossier as md
@@ -248,10 +295,11 @@ def selftest() -> int:
                 rc = merge(root, False)
         finally:
             md.enqueue_pr = md_enq
-        check("merge all: every open plan/docs PR joins the merge queue, oldest first (the queue settles each)", rc == 0 and queued == [434, 436, 437, 438, 439, 440, 443, 444, 445, 446], str(queued) + buf.getvalue())
+        check("merge all: every open plan/docs PR joins the merge queue, oldest first (the queue settles each)", rc == 0 and queued == [434, 436, 437, 438, 439, 440, 443, 444, 445, 446, 601, 602], str(queued) + buf.getvalue())
         calls = open(os.path.join(tmp, "calls.txt")).read()
         check("merge all: marks the ready-dossier plan draft ready, leaves the unfinished plan draft and the docs draft alone",
               "pr ready 440" in calls and "pr ready 441" not in calls and "pr ready 442" not in calls and "skip #442" in buf.getvalue(), calls[-300:])
+        check("merge all: the stub-base plan PR is merged through the queue like any other", 601 in queued and not ({603, 604, 605} & set(queued)), str(queued))
         check("merge all: a duplicate id is queued, not skipped (the queue renumbers it against the merged siblings)", 437 in queued)
     print("FAILED: " + ", ".join(fails) if fails else "all ok")
     return 1 if fails else 0
