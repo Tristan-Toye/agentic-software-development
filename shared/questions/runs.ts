@@ -691,10 +691,25 @@ export async function candidateRoots(questions: Question[], transcripts: TInfo[]
   for (const r of set) for (const w of await worktreesOf(r)) all.add(w)
   const active = activeRepos()   // the active-repos file, when there is one, lists the only repos shown (and ticked by auto work)
   const out: string[] = []
-  for (const w of all) if (existsSync(join(w, ".discovery", "dossiers")) && (active === null || repoShown(baseName(await mainOf(w)), active))) out.push(w)
+  for (const w of all) {
+    if (!existsSync(join(w, ".discovery", "dossiers"))) continue
+    if (isStackCheckout(w)) continue   // the /stub stack checkout mirrors a stub head, never a dossier source
+    const main = await mainOf(w)
+    if (active === null || repoShown(baseName(main), active)) out.push(w)
+  }
   return out
 }
 
+/**
+ * The stack checkout (scripts/stack_checkout.py): `<main>-stack`, a clone beside the main checkout `<main>`, detached
+ * at a stub head for the full stack run. `exists` is injectable for tests.
+ */
+export function isStackCheckout(dir: string, exists: (p: string) => boolean = existsSync): boolean {
+  const d = dir.replace(/\/+$/, "")
+  if (!d.endsWith("-stack")) return false
+  const main = d.slice(0, -"-stack".length)
+  return main.length > 0 && !main.endsWith("/") && exists(join(main, ".git")) && exists(join(d, ".git"))
+}
 export const baseName = (p: string): string => p.split("/").filter(Boolean).pop() ?? p
 /**
  * The name shown for a repo: its basename, except a root that is not a git checkout (it only holds `.discovery`,
