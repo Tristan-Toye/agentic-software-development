@@ -93,8 +93,8 @@ permission:
   websearch: deny
   task: deny
 claude:
-  model: haiku
-  effort: low
+  model: sonnet
+  effort: high
   tools: Read, Write, Edit, mcp__plugin_agentic-software-development_nav__code_outline, mcp__plugin_agentic-software-development_nav__code_item
   widen:
     nav: Claude Code only. opencode cannot scope a tool by argument, so `code_*` stays denied there. Here the plugin's PreToolUse hook (shared/blind-read.ts `navBodyGuard`) refuses every `code_item` call whose mode is not `contract` (docs + signature, bodies elided), and every nav tool other than `code_outline` and `code_item`: you look up an existing function's contract, never a body.

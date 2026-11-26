@@ -12,8 +12,8 @@ description: >-
   test families are refused. Spawn one per contract surface; returns `GAP:`
   instead of guessing.
 tools: Read, Write, Edit, mcp__plugin_agentic-software-development_nav__code_outline, mcp__plugin_agentic-software-development_nav__code_item
-model: haiku
-effort: low
+model: sonnet
+effort: high
 maxTurns: 80
 ---
 
