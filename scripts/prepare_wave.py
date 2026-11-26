@@ -109,6 +109,10 @@ an integrity failure).
 run records its defect count in `<root>/.agent-staging/wave-<holder>.lint`
 (`wave.lint` without a holder), and a clean run reports their sum.
 
+Wave-level checks a single payload cannot show (`wave_findings`): two implementers in one
+worktree are a DEFECT (LRN-0081); test authors sharing a tree with no sibling sentence, or payloads
+whose `SHARED_IDIOM` texts differ, are WARNINGs (LRN-0040, LRN-0018).
+
 Exit codes: 0 every spawn passed (and admission granted, when asked); 1 a
 defect, a gate refusal, or an admission refusal or deferral — nothing
 acquired; 2 unusable input.
@@ -194,6 +198,68 @@ def lint_row(row: dict[str, str], args: argparse.Namespace) -> tuple[bool, list[
         out += findings(lines) or ([] if rc == 0 else lines[-3:])
         ok = ok and rc == 0
     return ok, out
+
+
+def payload_field(text: str, name: str) -> str:
+    """The first token of an inline field, or the block of a `NAME: |` field, joined by newlines."""
+    match = re.search(r"^%s:[ \t]*(.*)$" % name, text, re.M)
+    if not match:
+        return ""
+    first = match.group(1).strip()
+    if first and first != "|":
+        return first
+    body = []
+    for line in text[match.end():].split("\n")[1:]:
+        if re.match(r"^[A-Z][A-Z0-9_-]{2,}(?:\s*\([^)]*\))?:", line):
+            break
+        body.append(line.rstrip())
+    return "\n".join(body).strip()
+
+
+def wave_findings(rows: list[dict[str, str]]) -> tuple[list[str], list[str]]:
+    """(defects, warnings) a single payload cannot show, from the wave as a whole.
+
+    LRN-0081: two implementers share a worktree, and with it one index: `git add <path>` stages out of
+    a tree another agent is editing, and each commit carries the neighbour's half-finished work.
+    LRN-0040: concurrent test authors in one tree can open each other's files, so the payload says
+    that sibling test files exist and are not the author's business (a warning: the guarantee is
+    informational unless each author has its own worktree).
+    LRN-0018: payloads of one wave whose SHARED_IDIOM differ are two idioms for the reviewer to reconcile.
+    """
+    defects: list[str] = []
+    warnings: list[str] = []
+    seen: list[tuple[dict[str, str], str]] = []
+    for row in rows:
+        try:
+            with open(row["payload"], encoding="utf-8") as fh:
+                seen.append((row, fh.read()))
+        except OSError:
+            continue
+    trees: dict[tuple[str, str], list[str]] = {}
+    for row, text in seen:
+        tree = payload_field(text, "WORKTREE_DIR").rstrip("/")
+        group = "implementer" if row["kind"] == "implementer" else "author" if row["kind"] in TEST_AUTHORS else ""
+        if tree and group:
+            trees.setdefault((group, tree), []).append(os.path.basename(row["payload"]))
+    for (group, tree), names in sorted(trees.items()):
+        if len(names) < 2:
+            continue
+        if group == "implementer":
+            defects.append("DEFECT   implementers %s share the worktree %s: committing agents never share a "
+                           "working tree; give each its own worktree and branch (LRN-0081)" % (", ".join(names), tree))
+        elif not all(re.search(r"\bsiblings?\b", text, re.I) for row, text in seen
+                     if os.path.basename(row["payload"]) in names):
+            warnings.append("WARNING  test authors %s share the worktree %s and a payload does not say that sibling "
+                            "test files exist and are not the author's business; give each its own worktree or "
+                            "say so in every payload, and record that the authors were not independent (LRN-0040)"
+                            % (", ".join(names), tree))
+    idioms = {re.sub(r"\s+", " ", payload_field(text, "SHARED_IDIOM")) for _, text in seen}
+    idioms.discard("")
+    idioms.discard("none")
+    if len(idioms) > 1:
+        warnings.append("WARNING  %d different SHARED_IDIOM texts in one wave: a shared idiom is byte-identical "
+                        "in every payload that shares the concept (LRN-0018)" % len(idioms))
+    return defects, warnings
 
 
 def fix_hint(defect: str, payload: str, plugin_root: str) -> str:
@@ -474,6 +540,14 @@ def main(argv: list[str]) -> int:
             linted.append(row["payload"])
     if linted:
         print(f"      sha256 of {len(linted)} linted payload(s) recorded in {record_hashes(args.root, args.holder, linted)}")
+
+    wave_defects, wave_warnings = wave_findings(rows)
+    for item in wave_defects + wave_warnings:
+        print(f"      {item}")
+    if wave_defects:
+        failed.append("wave")
+        failures.append((rows[0]["payload"], wave_defects))
+        defect_count += len(wave_defects)
 
     fixed = defects_fixed(args.root, args.holder, defect_count)
     ids = ", ".join(os.path.splitext(os.path.basename(r["payload"]))[0] for r in rows)
@@ -810,6 +884,36 @@ def selftest() -> int:
                 os.environ.pop("ASD_ADMISSION_DIR", None)
             else:
                 os.environ["ASD_ADMISSION_DIR"] = saved_dir
+
+        # LRN-0081, LRN-0040, LRN-0018: what only the wave as a whole shows.
+        def wave_row(kind: str, name: str, body: str) -> dict[str, str]:
+            path = os.path.join(tmp, name)
+            with open(path, "w", encoding="utf-8") as fh:
+                fh.write(body)
+            return {"kind": kind, "payload": path}
+
+        d, w = wave_findings([wave_row("implementer", "A1.md", "WORKTREE_DIR: /w/one\nPACKAGE: a\n"),
+                              wave_row("implementer", "A2.md", "WORKTREE_DIR: /w/two\nPACKAGE: b\n")])
+        check("LRN-0081: implementers in their own worktrees pass", not d and not w)
+        d, w = wave_findings([wave_row("implementer", "A1.md", "WORKTREE_DIR: /w/one\nPACKAGE: a\n"),
+                              wave_row("implementer", "A2.md", "WORKTREE_DIR: /w/one/\nPACKAGE: b\n")])
+        check("LRN-0081: two implementers in one worktree are a defect", len(d) == 1 and "LRN-0081" in d[0], str(d))
+        shared = "WORKTREE_DIR: /w/one\nFIXTURES: |\n  x\n"
+        d, w = wave_findings([wave_row("unit-test-author", "U1.md", shared), wave_row("unit-test-author", "U2.md", shared)])
+        check("LRN-0040: authors in one tree with no sibling sentence warn", not d and any("LRN-0040" in x for x in w), str(w))
+        said = shared + "FIXTURES: sibling test files exist; they are not your business and must not be opened\n"
+        d, w = wave_findings([wave_row("unit-test-author", "U1.md", said), wave_row("unit-test-author", "U2.md", said)])
+        check("LRN-0040: the sibling sentence in every payload is quiet", not d and not w, str(w))
+        d, w = wave_findings([wave_row("unit-test-author", "U1.md", "WORKTREE_DIR: /w/a\n"),
+                              wave_row("unit-test-author", "U2.md", "WORKTREE_DIR: /w/b\n")])
+        check("LRN-0040: authors in separate trees are quiet", not d and not w, str(w))
+        idiom = "WORKTREE_DIR: /w/%s\nSHARED_IDIOM: |\n  %s\nCONTRACT_HASH: 1\n"
+        d, w = wave_findings([wave_row("implementer", "A1.md", idiom % ("a", "make_row()")),
+                              wave_row("unit-test-author", "U1.md", idiom % ("b", "make_row()"))])
+        check("LRN-0018: one idiom text in every payload is quiet", not d and not w, str(w))
+        d, w = wave_findings([wave_row("implementer", "A1.md", idiom % ("a", "make_row()")),
+                              wave_row("unit-test-author", "U1.md", idiom % ("b", "build_row()"))])
+        check("LRN-0018: two idiom texts in one wave warn", any("LRN-0018" in x for x in w), str(w))
 
         # A failed wave prints one FIX LIST naming every defect, the seal step last.
         fl = fix_list([("/w/P1.md", ["DEFECT   the last non-empty line is not `PAYLOAD-END: P1 <8-hex hash>`: x; seal it with `compose_payloads.py --seal /w/P1.md`.",

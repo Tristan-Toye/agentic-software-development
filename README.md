@@ -292,6 +292,12 @@ gets the same two stops from this plugin:
   denied with a reason the model reads, and any different call resets the
   count. `ASD_REPEAT_GUARD_LIMIT` sets the allowed run (default 3; 0 turns it
   off). The hook fails open — bad input or state allows the call.
+- **A fixer guard.** `hooks/hooks.json` runs `scripts/hooks/fixer_guard.py`
+  before every Bash call: a `typos --write-changes`, `taplo fmt` or `--fix`
+  run that NAMES a path under `.discovery/` is denied (the `_typos.toml`
+  exclusion guards traversal only, so a named record is corrupted anyway)
+  unless it passes `--force-exclude`. `ASD_FIXER_GUARD=0` turns it off; it
+  fails open.
 
 - **A hard block for the owner's agent.** `hooks/hooks.json` runs
   `shared/claude/hard-block.ts` before file tools and Bash. It does nothing
@@ -335,7 +341,8 @@ passed on another try. So under Claude Code the payload is pasted:
 - **The check.** `hooks/hooks.json` runs `scripts/hooks/spawn_guard.py`
   before every `Agent` call to one of this plugin's agents and denies, with
   the fix as the reason, a pointer prompt (a payload file named and no
-  `FIELD:` line of its own), a path in a Claude Code scratchpad, or a
+  `FIELD:` line of its own), a path in a Claude Code scratchpad, an
+  unexpanded `@@TOKEN@@`, a `--no-verify` instruction, or a
   secret-shaped value. It never allows anything — what it lets through still
   goes to the classifier. Replayed over the 127 recorded spawns it refuses 20
   of the 22 the classifier denied; the other 2 were pasted payloads.
