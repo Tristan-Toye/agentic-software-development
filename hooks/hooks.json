@@ -1,5 +1,5 @@
 {
-  "description": "agentic-software-development: refuse a tool call that repeats itself in a row (scripts/hooks/repeat_guard.py), and a sub-agent spawn the auto mode classifier cannot judge (scripts/hooks/spawn_guard.py), and an auto-fixer that names a path under .discovery/ (scripts/hooks/fixer_guard.py), and the shared context mirror under bun: a read guard (shared/claude/pre-tool-use.ts), a checkpoint reminder (post-tool-use.ts) and the restore of phase_checkpoint records after a compaction (session-start.ts), a step line before each test, gate, PR and agent wave for the owner's timeline (step.ts), the hard block of the owner's agent sessions, active only when ASD_AGENT_SURFACE or ASD_HARD_BLOCK=1 is set (shared/claude/hard-block.ts), the main-checkout lock of a repo that commits .discovery/ (shared/claude/main-lock.ts), and a record of every call auto mode refuses, for the dashboard's Blocked card (permission-denied.ts)",
+  "description": "agentic-software-development: refuse a tool call that repeats itself in a row (scripts/hooks/repeat_guard.py), and a sub-agent spawn the auto mode classifier cannot judge (scripts/hooks/spawn_guard.py), and an auto-fixer that names a path under .discovery/ (scripts/hooks/fixer_guard.py), and the shared context mirror under bun: a read guard (shared/claude/pre-tool-use.ts), a checkpoint reminder (post-tool-use.ts) and the restore of phase_checkpoint records after a compaction (session-start.ts), a step line before each test, gate, PR and agent wave for the owner's timeline (step.ts), the hard block of the owner's agent sessions, active only when ASD_AGENT_SURFACE or ASD_HARD_BLOCK=1 is set (shared/claude/hard-block.ts), the main-checkout lock of a repo that commits .discovery/ (shared/claude/main-lock.ts), the no-polling guard of the building sub-agents (shared/claude/no-poll.ts), and a record of every call auto mode refuses, for the dashboard's Blocked card (permission-denied.ts)",
   "hooks": {
     "PreToolUse": [
       {
@@ -58,6 +58,16 @@
           {
             "type": "command",
             "command": "command -v bun >/dev/null 2>&1 && bun \"${CLAUDE_PLUGIN_ROOT}/shared/claude/main-lock.ts\" || true",
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "command -v bun >/dev/null 2>&1 && bun \"${CLAUDE_PLUGIN_ROOT}/shared/claude/no-poll.ts\" || true",
             "timeout": 5
           }
         ]

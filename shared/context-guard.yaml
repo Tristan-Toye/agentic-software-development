@@ -58,3 +58,15 @@ nav_redirect: true
 nav_small_bytes: 4000
 # A grep with -A/-B/-C of at least this many lines on source is a read, not a search.
 nav_grep_context: 5
+
+# --- C. no-polling guard --------------------------------------------------------------
+
+# Sub-agents (plugin prefix optional) whose Bash calls may not poll: run_in_background, a
+# sleep in a while/until/for loop, a bare sleep above the bound below, watch, tail -f, a
+# trailing &, a while/until loop that re-checks a process, file or log. A build, lint or
+# own-package test run is one foreground call; a long run is waited on with the blocking
+# `run_tests.py --wait` / `run_gates.py --wait`. The orchestrator and the other agents are
+# never checked; ASD_NO_POLL=0 turns the hook off. (The two test authors have no Bash.)
+no_poll_agents: [implementer, stub-materialiser]
+# A bare `sleep N` of up to this many seconds is allowed.
+no_poll_sleep_max: 5
