@@ -722,7 +722,7 @@ The prompt tells the orchestrator these rules:
   script fails the run, `--detach` then a blocking `--wait ID` for a long run (a call blocks at most 270 s, `--wait-cap` / `ASD_WAIT_CAP`
   change that, so a sub-agent's 5-minute prompt cache stays warm): never a
   `sleep`/`pgrep`/`until` poll loop or repeated status turns; only an exit 6 (still running) earns another
-  `--wait`; `--compile-lint-only` at the contract commit, the full list at the first push and the final head, `--affected-since REV` for the fix rounds between), never an ad-hoc
+  `--wait`; `--compile-lint-only` at the contract commit, `--round --affected-since REV` for the round check after each wave, fix or review round; the full list is CI's, and `/stub` alone runs it locally), never an ad-hoc
   script, so the timeline gets the suite and gate lines; and only the tests the step names (under SUITE-MODE `stub`, the
   new and affected tests plus CI: the full suite belongs to `/stub`).
 - Never end a stage while background work it started is still running;

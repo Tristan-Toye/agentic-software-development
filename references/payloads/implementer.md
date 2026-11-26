@@ -213,7 +213,7 @@ job.
   as above.
 - **`TEST_COMMAND` carries the known-red shape when the baseline is red by
   design.** Failed and passed counts, the failing-suite count, and the shared
-  failure signature, copied from the orchestrator's own verification run —
+  failure signature, copied from the orchestrator's own run of the tests —
   with the rule that any deviation is the implementer's defect. "The baseline
   held" becomes a mechanical comparison; three recorded implementers held a
   198-failure baseline exactly, and one proved a two-test discrepancy

@@ -305,20 +305,21 @@ This is the step everything else depends on.
    GATES: none — <why CI builds nothing to gate>
    ```
 
-   The list is fixed for the branch; the mode is not. The contract commit runs
-   `--compile-lint-only`. The first push of the branch (Phase 6) and the final
-   head before the PR (Phase 7 exit, `finalize_pr.py`) run the FULL list: no
-   flag. Every arbitration fix and review fix round in between runs
-   `--affected-since <sha of the last head the full list passed on>`: only the
-   gates a changed path touches run, each skipped gate prints `skipped: no
-   changed paths`, and a gate already green on the same inputs prints `REUSED`.
-   Never silent and fail safe: a changed path no gate claims (docs, assets,
-   a new language) runs every gate. Annotate a gate ` [paths: glob,glob]` when
-   its command is not one plain tool (`cargo`, `ruff`, `mypy`, `tsc`, `eslint`,
-   `go` ... are inferred; a script or `make` target always runs). A green
-   full run leaves a whole-list receipt keyed by the gates file and the
-   working tree (build log excluded); the next full call on the same tree
-   reuses it (`REUSED`) instead of running the list twice.
+   The list is fixed for the branch; the mode is not. The PR's CI is the full
+   verification, so no run of `/work-on` runs the whole list locally: no baseline
+   run at the start, none at the push or the final head. The contract commit runs
+   `--compile-lint-only`. After each wave, fix or review round the orchestrator
+   runs the ROUND CHECK, `--round --affected-since <sha of the last round's
+   head>` (`--round-tests NAME,...` names the new or affected test gates): the
+   compile, lint, format and `check` gates, the gates a changed path touches, and
+   those tests. Every other gate prints `skipped: not part of the round check`;
+   a gate already green on the same inputs prints `REUSED`. Mark a cheap checker
+   script (a docs, schema or dossier checker) ` [kind: check]` when you write
+   the list, so the round check runs it; a self-test or script gate runs in the
+   round only when its own files changed, so give it ` [paths: glob,glob]`.
+   Annotate a gate ` [paths: glob,glob]` when its command is not one plain tool
+   (`cargo`, `ruff`, `mypy`, `tsc`, `eslint`, `go` ... are inferred; a script or
+   `make` target is path-unknown and never part of a round check).
 
    Detail: `ref_section` with `phase-2-conditional` and the heading "The repository's PATH needs on a gates run". (when the repository's toolchain is not on a non-interactive shell's PATH, a gate exits 127, or the gate list is too long for one tool call.)
 

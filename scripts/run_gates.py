@@ -18,7 +18,7 @@ One gate per line, `name: command`; `command` runs with `bash -c` in --root.
 ` [needs: <tool>]` — the gate is reported SKIP, never run, when <tool> is not
 found on PATH. Two more optional trailing annotations, in any order with it:
 ` [paths: glob,glob]` names the files whose change can alter the gate (see "Path-affected
-gates") and ` [kind: compile|lint|format|test]` classifies it (see "The contract commit").
+gates") and ` [kind: compile|lint|format|test|check]` classifies it (see "The contract commit").
 Gate names must be unique and match `[A-Za-z0-9_.-]+`.
 
     lint: ruff check .
@@ -34,6 +34,7 @@ Gate names must be unique and match `[A-Za-z0-9_.-]+`.
                  [--line-chars N=300] [--timeout SECONDS]
                  [--path-prepend DIR ...] [--env-script FILE] [--detach]
                  [--affected-since REV] [--compile-lint-only] [--fresh]
+                 [--round [--round-kinds K,K] [--round-tests NAME[,NAME]]]
     run_gates.py --wait ID [--wait-cap SECONDS=270]
     run_gates.py --from-workflow FILE [FILE...]
     run_gates.py --selftest
@@ -100,6 +101,17 @@ as `SKIP name — skipped: <kind> gate, the contract commit compiles and lints o
 kind comes from `[kind:]`, else the tool and subcommand (`cargo clippy` lint, `cargo
 check` compile, `cargo fmt` format, `cargo test` test), else the gate's name; a gate
 whose kind is still unknown runs. Neither flag writes the whole-list receipt.
+# The round check: --round
+
+After each wave, fix or review round the orchestrator runs `--round` (with `--affected-since REV`
+and, for the new or touched tests, `--round-tests NAME[,NAME]`, the names of test gates). An implementer passes
+`--round-kinds compile,lint` and `--affected-since`: compile, lint and the tests of its own paths. It runs:
+the gates of kind compile, lint, format and check (`[kind: check]` marks a cheap checker script);
+the gates `--affected-since` finds a changed path claims (self-tests and script gates run only
+when their own files changed); and the named test gates. Every other gate is reported
+`skipped: not part of the round check`, a gate of unknown kind included. It never reads or writes
+the whole-list receipt. The full mode (no `--round`) stays for /stub.
+
 # Long runs: --detach, then --wait
 
 `--detach` starts the same run (every other flag kept) in its own session,
@@ -389,7 +401,7 @@ def infer_paths(command: str) -> list[str] | None:
 
 
 def infer_kind(gate: dict) -> str | None:
-    """compile / lint / format / test, from `[kind:]`, else the command's tool and subcommand, else the name."""
+    """compile / lint / format / test / check, from `[kind:]`, else the command's tool and subcommand, else the name."""
     if gate.get("kind"):
         return gate["kind"]
     segs = _segments(gate["command"])
@@ -504,6 +516,28 @@ def select_contract(gates: list[dict]) -> tuple[dict[str, str], list[str]]:
         elif kind not in ("compile", "lint"):
             skips[g["name"]] = f"skipped: {kind} gate, the contract commit compiles and lints only"
     return skips, unknown
+
+
+def select_round(gates: list[dict], changed: list[str] | None, tests: set[str],
+                 kinds: tuple[str, ...] = ("compile", "lint", "format", "check")) -> tuple[dict[str, str], str]:
+    """The round check: ({gate name: skip reason}, note). Runs compile, lint, format and check gates, the named
+    test gates, and every gate a changed path claims. An unclaimed changed path never widens the round."""
+    skips: dict[str, str] = {}
+    for g in gates:
+        kind = infer_kind(g)
+        if kind in kinds or g["name"] in tests:
+            continue
+        if changed and g.get("paths") and any(path_matches(p, g["paths"]) for p in changed):
+            continue
+        skips[g["name"]] = "skipped: not part of the round check"
+    note = f"{len(gates) - len(skips)} of {len(gates)} gates selected"
+    if changed is not None:
+        known = [g for g in gates if g.get("paths")]
+        unclaimed = [p for p in changed if not path_matches(p, PIPELINE_PATHS)
+                     and not any(path_matches(p, g["paths"]) for g in known)]
+        if unclaimed:
+            note += f"; {len(unclaimed)} changed path(s) map to no gate (CI covers them)"
+    return skips, note
 
 
 def gate_inputs_hash(gate: dict, fingerprint: tuple[str, str], entries: list[tuple[str, str]]) -> str:
@@ -933,7 +967,7 @@ class GateFileError(Exception):
 
 
 ANNOT_RE = re.compile(r"^(?P<rest>.*)\[(?P<key>needs|paths|kind):\s*(?P<val>[^\]]+)\]\s*$")
-KINDS = ("compile", "lint", "format", "test")
+KINDS = ("compile", "lint", "format", "test", "check")
 
 
 def parse_gates(text: str) -> list[dict]:
@@ -1252,6 +1286,13 @@ def main(argv: list[str]) -> int:
                          "and a changed path no gate claims runs them all")
     ap.add_argument("--compile-lint-only", action="store_true",
                     help="the contract (stub) commit: run only compile and lint gates; the rest are reported skipped")
+    ap.add_argument("--round", action="store_true", dest="round_check",
+                    help="the round check after a wave, fix or review round: compile, lint, format and check gates, "
+                         "the gates --affected-since claims, and the --round-tests test gates; the rest are skipped")
+    ap.add_argument("--round-kinds", metavar="KIND[,KIND]", default="compile,lint,format,check",
+                    help="--round: the kinds that always run (an implementer passes compile,lint)")
+    ap.add_argument("--round-tests", metavar="NAME[,NAME]", default="",
+                    help="--round: names of the test gates to run")
     ap.add_argument("--receipt", action="store_true", help="exit 0 when a green receipt matches this tree, 4 when none; run nothing")
     ap.add_argument("--path-prepend", action="append", default=[], metavar="DIR",
                     help="prepend DIR to every gate's PATH (repeatable; $HOME and ~/ expand)")
@@ -1310,11 +1351,11 @@ def main(argv: list[str]) -> int:
 
     root = os.path.abspath(args.root)
     gates_sha = hashlib.sha256(gates_text.encode("utf-8")).hexdigest()
-    full = not (args.only or args.affected_since or args.compile_lint_only)
+    full = not (args.only or args.affected_since or args.compile_lint_only or args.round_check)
     fingerprint = tree_fingerprint(root) if not args.only else None
     rec = matching_receipt(root, gates_sha, fingerprint) if fingerprint and not args.fresh else None
     if args.receipt and not full:
-        print("run_gates: --receipt checks the full list; drop --only, --affected-since and --compile-lint-only")
+        print("run_gates: --receipt checks the full list; drop --only, --affected-since, --round and --compile-lint-only")
         return EXIT_NO_RECEIPT
     if args.receipt:
         if rec:
@@ -1337,7 +1378,23 @@ def main(argv: list[str]) -> int:
         print("run_gates: contract commit: compile and lint gates only"
               + (f"; kind unknown, running anyway: {', '.join(unknown_kind)}" if unknown_kind else ""))
     entries: list[tuple[str, str]] = []
-    if args.affected_since:
+    if args.round_check:
+        wanted_tests = {x.strip() for x in args.round_tests.split(",") if x.strip()}
+        unknown_tests = sorted(wanted_tests - {g["name"] for g in gates})
+        if unknown_tests:
+            print(f"run_gates: --round-tests: unknown gate name(s): {', '.join(unknown_tests)}", file=sys.stderr)
+            return 2
+        r_changed = changed_paths(root, args.affected_since, fingerprint[0]) if args.affected_since and fingerprint else None
+        r_kinds = tuple(x.strip() for x in args.round_kinds.split(",") if x.strip())
+        bad_kinds = [k for k in r_kinds if k not in KINDS]
+        if bad_kinds:
+            print(f"run_gates: --round-kinds: unknown kind(s): {', '.join(bad_kinds)}", file=sys.stderr)
+            return 2
+        r_skips, r_note = select_round(gates, r_changed, wanted_tests, r_kinds)
+        for name, why in r_skips.items():
+            skip_reason.setdefault(name, why)
+        print(f"run_gates: round check: {r_note}")
+    elif args.affected_since:
         changed = changed_paths(root, args.affected_since, fingerprint[0]) if fingerprint else None
         if changed is None:
             print(f"run_gates: affected: cannot diff against {args.affected_since!r} here; running every selected gate")
@@ -1361,7 +1418,7 @@ def main(argv: list[str]) -> int:
         if g["name"] in skip_reason:
             results[i] = ("skip", g, skip_reason[g["name"]])
             continue
-        if args.affected_since and fingerprint and not args.fresh and not (
+        if (args.affected_since or args.round_check) and fingerprint and not args.fresh and not (
                 g["needs"] and shutil.which(g["needs"], path=gate_env(args.path_prepend).get("PATH")) is None):
             hit = gate_receipt(root, g, gate_inputs_hash(g, fingerprint, entries))
             if hit:
@@ -1889,6 +1946,23 @@ def selftest() -> int:
         check("select_affected: no changed path skips every path-known gate, never the unknown one",
               set(sk) == {"rust", "py"})
 
+        pg = parse_gates("chk: python3 scripts/check_x.py [kind: check]\nunit: pytest -q\nfmt: cargo fmt --check\n"
+                         "selft: python3 a.py --selftest [paths: a.py]\nwho: make it\n")
+        check("kind: check parses and infer_kind honours it", [infer_kind(g) for g in pg][:1] == ["check"])
+        try:
+            parse_gates("x: true [kind: bogus]")
+            check("an unknown kind is still refused", False)
+        except GateFileError:
+            check("an unknown kind is still refused", True)
+        sk, _ = select_round(pg, ["b.py"], set())
+        check("select_round: check and format run; tests, unknown kinds and unrelated self-tests are skipped",
+              set(sk) == {"unit", "selft", "who"})
+        sk, _ = select_round(pg, ["a.py"], {"unit"})
+        check("select_round: a named test and a gate its own file changed run",
+              set(sk) == {"who"})
+        sk, note = select_round(pg, ["README.md"], set())
+        check("select_round: an unclaimed path never widens the round", "who" in sk and "map to no gate" in note)
+
         arepo = os.path.join(tmp, "arepo")
         os.makedirs(os.path.join(arepo, "src"))
         os.makedirs(os.path.join(arepo, "app"))
@@ -1967,6 +2041,25 @@ def selftest() -> int:
             check("a path-unknown gate reruns once the tree changes", n("unk") == 2)
             check("per-gate receipts live in the repo's git dir, not in ~/.agentic",
                   os.path.isdir(os.path.join(arepo, ".git", "run_gates-receipts", "gates")))
+            cnt["tst"] = os.path.join(tmp, "cnt-tst")
+            cnt["chk"] = os.path.join(tmp, "cnt-chk")
+            with open(ag, "a", encoding="utf-8") as fh:
+                fh.write(f"tst: echo t >> {cnt['tst']} [kind: test] [paths: *.nothing]\n"
+                         f"chk: echo c >> {cnt['chk']} [kind: check]\n")
+            before = (n("rust"), n("py"), n("fmt"), n("unk"))
+            rc, out = arun("--round", "--fresh")
+            check("round: compile, lint, format and check run; test and unknown-kind gates are skipped",
+                  rc == 0 and n("chk") == 1 and n("tst") == 0 and n("unk") == before[3]
+                  and (n("rust"), n("py"), n("fmt")) == (before[0] + 1, before[1] + 1, before[2] + 1)
+                  and "skipped: not part of the round check" in out and "round check" in out)
+            rc, out = arun("--round", "--round-tests", "tst", "--fresh")
+            check("round: --round-tests adds the named test gate", rc == 0 and n("tst") == 1)
+            rc, out = arun("--round", "--round-kinds", "compile,lint", "--fresh")
+            check("round: --round-kinds narrows the always-run kinds", rc == 0 and "SKIP fmt" in out and "SKIP chk" in out)
+            rc, out = arun("--round", "--round-tests", "nope")
+            check("round: an unknown --round-tests name is refused", rc == 2)
+            rc, out = arun("--round", "--receipt")
+            check("round never claims the whole-list receipt", rc == EXIT_NO_RECEIPT)
             with open(ag, "w", encoding="utf-8") as fh:
                 fh.write(f"bad: exit 3 [paths: *.py]\n")
             rc, out = arun("--affected-since", "HEAD", "--fresh")
