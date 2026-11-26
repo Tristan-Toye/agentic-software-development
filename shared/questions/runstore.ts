@@ -95,9 +95,19 @@ export async function readUpdatesSig(key: string, dir = runsDir()): Promise<{ al
   return { all, changed: true, sig }
 }
 
-export function pidAlive(pid: number): boolean {
+// kill(pid, 0) is a synchronous syscall and one dashboard request asks it for every run's runner file (hundreds): on a
+// loaded machine that alone held the event loop for seconds. A liveness read is good for a few seconds, so each pid is asked once per TTL.
+const ALIVE_TTL_MS = 3_000
+const aliveSeen = new Map<number, { at: number; alive: boolean }>()
+export function pidAlive(pid: number, now = Date.now()): boolean {
   if (!pid || pid < 1) return false
-  try { process.kill(pid, 0); return true } catch (e) { return (e as NodeJS.ErrnoException).code === "EPERM" }
+  const hit = aliveSeen.get(pid)
+  if (hit && now - hit.at < ALIVE_TTL_MS) return hit.alive
+  let alive: boolean
+  try { process.kill(pid, 0); alive = true } catch (e) { alive = (e as NodeJS.ErrnoException).code === "EPERM" }
+  if (aliveSeen.size > 2000) aliveSeen.clear()
+  aliveSeen.set(pid, { at: now, alive })
+  return alive
 }
 
 /** `<key>.runner.json`; a running or waiting state with a dead pid reads as stopped. null when absent. */

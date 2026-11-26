@@ -6,7 +6,9 @@
 import { mkdirSync, readFileSync, readdirSync, renameSync, writeFileSync } from "node:fs"
 import { homedir } from "node:os"
 import { join } from "node:path"
+import { readdir, readFile } from "node:fs/promises"
 import { askAgent, CHAT_CHANNEL, type DmDeps } from "./dmagent.ts"
+import { IO_CONCURRENCY, mapLimit } from "./asyncio.ts"
 
 export type ChatMsg = { id: string; from: "owner" | "agent"; text: string; ts: string; pending?: boolean }
 export type Chat = { id: string; title: string; started: string; last: string; messages: ChatMsg[] }
@@ -39,6 +41,21 @@ export function listChats(): { id: string; title: string; started: string; last:
   const out = []
   for (const n of names) {
     const c = readChat(n.slice(0, -5))
+    if (!c) continue
+    out.push({ id: c.id, title: c.title, started: c.started, last: c.last, turns: c.messages.filter((m) => m.from === "owner").length, pending: c.messages.some((m) => m.pending) })
+  }
+  return out.sort((a, b) => (a.last < b.last ? 1 : -1))
+}
+
+/** `listChats` for the request handler: the page polls it, so a slow disk must not stall the event loop in readdirSync/readFileSync. */
+export async function listChatsAsync(): ReturnType<typeof listChats> {
+  let names: string[]
+  try { names = (await readdir(chatDir())).filter((n) => n.endsWith(".json")) } catch { return [] }
+  const chats = await mapLimit(names, IO_CONCURRENCY, async (n) => {
+    try { if (!ID.test(n.slice(0, -5))) return null; return JSON.parse(await readFile(join(chatDir(), n), "utf8")) as Chat } catch { return null }
+  })
+  const out = []
+  for (const c of chats) {
     if (!c) continue
     out.push({ id: c.id, title: c.title, started: c.started, last: c.last, turns: c.messages.filter((m) => m.from === "owner").length, pending: c.messages.some((m) => m.pending) })
   }

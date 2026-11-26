@@ -832,3 +832,25 @@ restarted server answers at once from them while its first scan runs.
 - **Env overrides:** `ASD_RUNS_ROOTS`, `ASD_CLAUDE_PROJECTS`,
   `ASD_RUNS_NO_GH=1`, `ASD_STUBS_NO_GIT=1`, `ASD_RUNS_DIR`,
   `ASD_OPEN_WORK_DIR`, `ASD_RUNNER_BIN` (replaces the runner script path).
+### Event-loop watchdog
+
+`shared/questions/lagwatch.ts` and `lagworker.ts`. The main thread beats to a
+Worker every second; the Worker keeps its own clock and SIGKILLs the server
+(launchd's KeepAlive starts a fresh one) when the main thread has **stopped**,
+not when it is merely slow:
+
+- **Hard limit:** no beat for 300 s (`ASD_LAG_LIMIT_MS`). A thread that is slow
+  but still beats between its stalls (a saturated machine, a long scan) is only
+  logged (`event loop was blocked for N s`), never killed.
+- **Startup grace:** no kill during the first 300 s after start
+  (`ASD_LAG_GRACE_MS`, 0 turns it off). The first rescan is the heaviest work,
+  and killing it only restarted it (the 2026-11-26 crash loop).
+- `lagVerdict(lastBeat, now, limitMs, startedAt, graceMs)` is the pure decision.
+  `ASD_LAG_WATCH=0` turns the watchdog off.
+- The reason it exists is unchanged (2026-11-12, a feedback loop left the server
+  permanently unresponsive): a server silent for the hard limit is killed.
+- The main thread stays short on purpose: the runs and stubs rescans run on the
+  scan worker (`scanpool.ts`), the pid liveness reads are cached for 3 s, the
+  question-to-run linking is indexed by dossier id (not a scan of every run per
+  question), and the chat list is read async.
+
