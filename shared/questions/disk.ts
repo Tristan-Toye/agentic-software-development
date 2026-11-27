@@ -1,14 +1,25 @@
 // The dashboard's disk watch: every few minutes it asks scripts/disk_guard.py how much is free, starts a reclaim of
 // build output nobody uses when free space drops below the reclaim target, and tells the owner once when it drops
 // below the floor, where the runner stops starting stages. Hourly it also sweeps: each repo's own reclaim hook
-// (a VM's build directories and disk trim) runs whatever the free space. The page shows the reading (`disk` in /api/runs) as a
+// (a VM's build directories and disk trim) runs whatever the free space. The reading also carries each Docker VM engine
+// (Colima profile, Lima instance): a low one starts a reclaim and, if still low after it, one owner alert. The page shows the reading (`disk` in /api/runs) as a
 // banner while it is low. Contract: references/runner.md ("Disk space").
 import { join } from "node:path"
 
 export type DiskReading = {
   freeGiB: number; floorGiB: number; targetGiB: number; low: boolean; checked: string
   reclaimable: number; reclaiming: boolean; lastReclaim?: string; lastSweep?: string
+  engines?: DockerEngine[]                     // each Docker VM engine (Colima profile, Lima instance) and its free space
 }
+
+export type DockerEngine = {
+  kind: string; name: string; context: string; reachable: boolean; low: boolean
+  freeGiB?: number; totalGiB?: number; freeFrac?: number; floorPct?: number; floorGiB?: number; repos?: string[]
+}
+
+const ENGINE_RETRY_MS = 30 * 60_000
+const engineTried = new Map<string, number>()   // engine name -> when a reclaim last ran while it was low
+const engineAlerted = new Set<string>()         // engines the owner was told about, until they are back above the floor
 
 export const diskScript = (): string => process.env.ASD_DISK_GUARD_BIN || join(import.meta.dir, "..", "..", "scripts", "disk_guard.py")
 
@@ -34,10 +45,32 @@ export async function checkDisk(d: DiskDeps): Promise<DiskReading | null> {
   if (!st || typeof st.freeGiB !== "number") return reading
   const was = reading?.low ?? false
   const n = Array.isArray(st.reclaimable) ? st.reclaimable.length : 0
-  reading = { freeGiB: st.freeGiB, floorGiB: st.floorGiB, targetGiB: st.targetGiB, low: !!st.low, checked: st.checked, reclaimable: n, reclaiming, lastReclaim, lastSweep }
+  const engines: DockerEngine[] = Array.isArray(st.engines) ? st.engines : []
+  reading = { engines, freeGiB: st.freeGiB, floorGiB: st.floorGiB, targetGiB: st.targetGiB, low: !!st.low, checked: st.checked, reclaimable: n, reclaiming, lastReclaim, lastSweep }
   if (reading.low && !was)
     d.notify("Disk almost full", `${st.freeGiB} GiB free, below the ${st.floorGiB} GiB floor: runs queue until there is room. Reclaiming unused build output.`)
-  if (st.freeGiB < st.targetGiB && n && !reclaiming) {
+  // A low VM engine: one reclaim (dangling images, then build cache), and one owner alert if it is still low afterwards.
+  const lowNow = new Set<string>()
+  let engineReclaim = false
+  for (const e of engines) {
+    if (!e.low) continue
+    lowNow.add(e.name)
+    const tried = engineTried.get(e.name)
+    if (!reclaiming && (tried === undefined || Date.now() - tried > ENGINE_RETRY_MS)) engineReclaim = true
+    else if (!reclaiming && tried !== undefined && !engineAlerted.has(e.name)) {
+      engineAlerted.add(e.name)
+      const frac = typeof e.freeFrac === "number" ? ` (${Math.round(e.freeFrac * 100)}%)` : ""
+      d.notify(`Docker engine ${e.name} almost full`,
+        `${e.kind} ${e.name} (context ${e.context}) has ${e.freeGiB} GiB free${frac} of ${e.totalGiB} GiB after pruning dangling images and build cache. ` +
+        `Runs that need it queue until there is room. Options: resize the VM disk, or prune tagged images by hand ` +
+        `(docker --context ${e.context} image ls, then image rm).`)
+    }
+  }
+  for (const k of [...engineTried.keys()]) if (!lowNow.has(k)) { engineTried.delete(k); engineAlerted.delete(k) }
+  if (engineReclaim && !reclaiming) {
+    for (const k of lowNow) if (!engineTried.has(k) || Date.now() - (engineTried.get(k) ?? 0) > ENGINE_RETRY_MS) engineTried.set(k, Date.now())
+  }
+  if ((engineReclaim || (st.freeGiB < st.targetGiB && n)) && !reclaiming) {
     reclaiming = true; reading.reclaiming = true
     void d.reclaim().finally(() => {
       reclaiming = false; lastReclaim = new Date().toISOString()
@@ -84,4 +117,4 @@ export function diskDeps(notify: DiskDeps["notify"], changed: () => void): DiskD
 }
 
 /** Test hook: forget the stored reading. */
-export function resetDisk(): void { reading = null; reclaiming = false; lastReclaim = undefined; sweeping = false; lastSweep = undefined }
+export function resetDisk(): void { engineTried.clear(); engineAlerted.clear(); reading = null; reclaiming = false; lastReclaim = undefined; sweeping = false; lastSweep = undefined }

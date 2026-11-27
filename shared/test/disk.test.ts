@@ -64,5 +64,24 @@ resetDisk()
   check("the reading records when the sweep ended", !!(await checkDisk(d))?.lastSweep)
 }
 
+const eng = (free: number, low: boolean) => ({ kind: "colima", name: "podcast-engine", context: "colima-podcast-engine", reachable: true, low, freeGiB: free, totalGiB: 30, freeFrac: free / 30 })
+resetDisk()
+{
+  const { d, log, release } = deps([{ ...st(200, 0), engines: [eng(1, true)] }, { ...st(200, 0), engines: [eng(1, true)] }, { ...st(200, 0), engines: [eng(1, true)] }])
+  const r = await checkDisk(d)
+  check("a low VM engine starts one reclaim and no alert yet", log.reclaims === 1 && log.notes.length === 0 && r?.engines?.[0]?.low === true)
+  release(); await new Promise((r) => setTimeout(r, 20))
+  check("still low after the reclaim: one alert naming the engine, its free space and the options",
+    log.notes.length === 1 && log.notes[0].includes("podcast-engine"))
+  await checkDisk(d)
+  check("the alert is once only", log.notes.length === 1 && log.reclaims === 1)
+}
+resetDisk()
+{
+  const { d, log, release } = deps([{ ...st(200, 0), engines: [eng(1, true)] }, { ...st(200, 0), engines: [eng(20, false)] }])
+  await checkDisk(d); release(); await new Promise((r) => setTimeout(r, 20))
+  check("freed by the reclaim: no alert", log.notes.length === 0 && log.reclaims === 1)
+}
+
 if (fails.length) { console.log("FAIL\n  " + fails.join("\n  ")); process.exit(1) }
 console.log("PASS (all cases)")

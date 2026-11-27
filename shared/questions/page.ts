@@ -1066,10 +1066,13 @@ function dirtyMainView() {
     'Runs never edit it: commit these on a branch from origin/development, or discard them (git checkout -- <file>), so git pull works there again.'])));
 }
 function diskView() {
-  const d = S.disk; if (!d || !d.low) return null;
-  return h('div', { class: 'diskbar', 'data-k': 'disk' }, [h('b', {}, ['Disk almost full: ' + Math.round(d.freeGiB) + ' GiB free']),
+  const d = S.disk; if (!d) return null;
+  const eng = (d.engines || []).filter(e => e.low).map(e => h('div', { class: 'diskbar', 'data-k': 'disk-engine:' + e.name }, [h('b', {}, ['Docker engine ' + e.name + ' almost full: ' + e.freeGiB + ' GiB free of ' + e.totalGiB]),
+    ' — below the VM floor, so runs that need it queue. ', d.reclaiming ? 'Pruning dangling images and build cache now…' : 'Dangling images and build cache are pruned automatically; if it stays low: resize the VM, or prune tagged images by hand (docker --context ' + e.context + ' image ls).']));
+  if (!d.low) return eng.length ? h('div', {}, eng) : null;
+  return h('div', {}, [h('div', { class: 'diskbar', 'data-k': 'disk' }, [h('b', {}, ['Disk almost full: ' + Math.round(d.freeGiB) + ' GiB free']),
     ' — below the ' + Math.round(d.floorGiB) + ' GiB floor, so runs queue instead of starting a stage. ',
-    d.reclaiming ? 'Reclaiming unused build output now…' : (d.reclaimable ? d.reclaimable + ' idle build folder(s) can go; the next check reclaims them.' : 'Nothing idle is left to reclaim: free space by hand (python3 scripts/disk_guard.py status lists what is kept and why).')]);
+    d.reclaiming ? 'Reclaiming unused build output now…' : (d.reclaimable ? d.reclaimable + ' idle build folder(s) can go; the next check reclaims them.' : 'Nothing idle is left to reclaim: free space by hand (python3 scripts/disk_guard.py status lists what is kept and why).')])].concat(eng));
 }
 function accountsView() {
   const as = S.accounts || []; if (!as.length) return null;
