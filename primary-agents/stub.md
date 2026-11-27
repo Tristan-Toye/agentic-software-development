@@ -143,17 +143,26 @@ way, repair it yourself with the repository's own documented commands
 timeline, write it in the record, and go on. Never ask the owner for these:
 
 - **Stale stack settings** (`.runtime.env` lacks names the catalog has, a
-  test or `test-env.sh` says to re-run `up.sh`): `run_tests.py --vm` syncs it
-  itself (`STACK-ENV:` in its output). When it reports `skipped`, run the
-  repository's `up.sh` from the stack checkout (Step 6) through the repository's
-  host wrapper (config-harness: `bash deploy/host/host.sh exec --
-  deploy/scripts/up.sh --build test`, which forwards the sops key into the
-  VM; plain `limactl shell` cannot decrypt), then check every service is
-  healthy.
+  test or `test-env.sh` says to re-run `up.sh`, or "no stack settings file"):
+  `stack_checkout.py sync` copies the main checkout's untracked stack state
+  (`.runtime.env`, the key set the repo's config lists) into the stack
+  checkout, and `run_tests.py --vm` syncs the names itself (`STACK-ENV:` in its
+  output). When it reports `skipped`, report `RUNNER: ENV stack <detail>`
+  and let the runner prove or stop (below); never run `up.sh` yourself.
 - **A stopped VM or an unhealthy stack service**: report
   `RUNNER: ENV vm|stack <detail>`; for a /stub run the runner repairs it
-  (`scripts/stack_repair.py`) and answers. When it answers `not repaired`,
-  use the repository's documented repair for that service yourself once.
+  (`scripts/stack_repair.py`) and answers. For `vm`, when it answers `not
+  repaired`, use the repository's documented repair yourself once.
+- **Who owns the shared stack project** (`foreign_project_state owner=<main
+  checkout>`, `suite_window_active`, `stack_lease_refused`): report
+  `RUNNER: ENV stack <the refusal line>` and nothing else. The runner hands the
+  project from the main checkout to the stack checkout itself (the repo's own
+  down, then the bring-up from the stack checkout, free lease, bounded) and
+  answers `repaired ... verified` only once the owner probe names the stack
+  checkout and the env script's settings file exists. When it cannot prove
+  that it ends the run itself with the status `STACK-ENV: stopped — <reason>`
+  on the dashboard. **Never an owner question**, never tear down or bring up
+  the shared project by hand, and never copy or print the key files.
 - **A leftover stack** another checkout started (its worktree no longer
   registered, no live run of its dossier, no lease held): tear it down with
   its volumes through the repository's documented teardown.
@@ -171,11 +180,11 @@ timeline, write it in the record, and go on. Never ask the owner for these:
 Each repair is tried at most twice per cause. Ask the owner (`ask_owner.py
 --kind uncertainty`, then wait) only when:
 
-- the repair needs something outside the VM and the pool: the Mac itself
+- (never for the shared stack's ownership or settings: see above) the repair needs something outside the VM and the pool: the Mac itself
   (its user account, its keychain, its disk), a secret value or a cloud
   secret that does not exist yet, or an account or ruleset change;
-- it would delete data that is not test state of this run, or another run
-  holds the stack lease and is still alive;
+- it would delete data that is not test state of this run (a held stack
+  lease is not a question: the runner stops the run with its status);
 - the documented repair failed twice, or no documented command exists;
 - a harness permission check refused the command (name the command and the
   refusal; never retry it another way).
@@ -328,8 +337,11 @@ The integrated verdict, once per head, in the VM, on the guarded path:
    re-run. It is `<main checkout>-stack`, a local clone (its own `.git`, so a
    repository whose `up.sh` refuses worktrees accepts it) that outlives the
    run, always detached and never removed, so the shared stack may be bound
-   to it. Its first run has no env file of its own: `run_tests.py` then brings
-   the stack up from it (`STACK-ENV: synced`), which is expected once.
+   to it. `sync` also copies the main checkout's untracked stack state (the
+   config's `stack_state_files`: `.runtime.env`, the key set) into it, never
+   printing a value (`STACK-STATE: copied <paths>`), so its first run has its
+   settings file; a project the main checkout owns is handed to it by the
+   runner (`RUNNER: ENV stack ...`, never a question).
    **Never check out, detach or switch the main checkout**: it
    stays on development, read-only (the main-checkout lock refuses it, and
    the dashboard reads its dossiers). Exit 2 names a dirty stack checkout or

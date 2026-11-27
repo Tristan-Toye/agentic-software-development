@@ -59,6 +59,19 @@ projects (`leftover_projects`); the runner tears one down itself ONLY when it ca
            skipped — leftover project ...`; the session skips its live stack tests, the stub's full suite covers them.
 Never an owner question. Independent of ASD_STACK_REPAIR; off with ASD_STACK_LEFTOVER_REPAIR=0.
 
+Ownership hand-off (`handoff()`, for a /stub run; `handoff: true` on a leftover_projects entry): the shared project belongs to
+whichever checkout last brought it up. A /stub run builds in the stack checkout (`<main>-stack`), so a project the MAIN checkout
+owns refuses its bring-up (`foreign_project_state owner=<main>`), and the reverse. Only between those two persistent
+checkouts of the same repo, and only with the stack lease free and no live suite window, the runner hands it over: the
+repo's own `down` from the OWNING checkout, then the entry's `handoff_up` (default: the config's `stack_up`) from the stack
+checkout, under stack_repair's lock, at most LEFTOVER_MAX_PER_HOUR per VM per hour (own key). An owner that is neither of the two
+(a worktree) is never touched here: a registered worktree is alive and is a skip; an unregistered one goes through
+the dead-proof of `leftover` first. The result is PROVEN, never assumed: the owner probe must name the stack checkout and the
+env script's settings file (`env_file`, default .runtime.env) must exist in it, else the state is `failed` with the
+exact reason. `verify()` is the same post-check for any "repaired" claim. A /stub run turns a failure into a stop (run_dossier:
+`STACK-ENV: stopped`), never an owner question. Config key `stack_state_files` lists the untracked state
+stack_checkout.py copies into the stack checkout.
+
     stack_env.py check --tree T     prints `ok`, or the missing names; exit 1 on drift
     stack_env.py sync --tree T      prints the STACK-ENV line; exit 0 ok/synced, 1 skipped
     stack_env.py fixture --tree T [--suite]   same for the fixture; exit 0 ok/rebuilt, 1 skipped
@@ -78,6 +91,7 @@ import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
+import stack_checkout  # noqa: E402
 import stack_repair  # noqa: E402
 
 MAX_PER_HOUR = 4
@@ -367,6 +381,142 @@ def leftover(tree: str, cfg: dict, only: str = "", run=stack_repair._run, log=la
         if r["state"] == "repaired" or last["state"] == "none":
             last = r
     return last
+# ---- ownership hand-off between the two persistent checkouts (main <-> stack checkout) ----
+def persistent_pair(root: str) -> tuple[str, str]:
+    """(main checkout, stack checkout) for `root`, whichever of the two it is."""
+    real = os.path.realpath(root).rstrip("/")
+    if real.endswith(stack_checkout.SUFFIX) and stack_checkout.is_stack_checkout(real):
+        real = real[: -len(stack_checkout.SUFFIX)]
+    return real, stack_checkout.stack_path(real)
+
+
+def registered_worktrees(main: str) -> set[str]:
+    try:
+        r = subprocess.run(["git", "-C", main, "worktree", "list", "--porcelain"], capture_output=True, text=True, timeout=30)
+    except (OSError, subprocess.SubprocessError):
+        return set()
+    return {os.path.realpath(ln[9:].strip()) for ln in r.stdout.splitlines() if ln.startswith("worktree ")}
+
+
+def project_owner(proj: dict, cfg: dict, root: str, run) -> tuple[str | None, str]:
+    """(owner checkout or "" when the project is not up, "") or (None, why) when the probe cannot say."""
+    if not proj.get("owner_probe"):
+        return None, "the repo's config names no owner_probe"
+    rc, out = run(_sub(proj["owner_probe"], cfg, root), 60)
+    if rc != 0:
+        return None, f"could not read the project's owner (exit {rc})"
+    return (out.strip().splitlines()[-1].strip() if out.strip() else ""), ""
+
+
+def _same(a: str, b: str) -> bool:
+    return os.path.realpath(a).rstrip("/") == os.path.realpath(b).rstrip("/")
+
+
+def settings_file(cfg: dict, root: str) -> str:
+    return os.path.join(root, cfg.get("env_file") or ".runtime.env")
+
+
+def verify(root: str, cfg: dict, run=stack_repair._run) -> str:
+    """"" when the stack checkout of `root` is proven usable, else the exact reason. Proof: the env script's settings file exists
+    in the stack checkout, and no configured hand-off project is up under another checkout than the stack checkout."""
+    main, stack = persistent_pair(root)
+    if not os.path.isfile(settings_file(cfg, stack)):
+        return (f"the env script's settings file {cfg.get('env_file') or '.runtime.env'} does not exist in the stack checkout {stack}"
+                + ("" if os.path.isfile(settings_file(cfg, main)) else f" nor in the main checkout {main}, so there is nothing to copy (up.sh writes it)"))
+    for proj in cfg.get("leftover_projects") or []:
+        if isinstance(proj, dict) and proj.get("handoff") and proj.get("owner_probe"):
+            owner, why = project_owner(proj, cfg, main, run)
+            if owner is None:
+                return f"project {proj.get('name')}: {why}"
+            if owner and not _same(owner, stack):
+                return f"project {proj.get('name')} is owned by {owner}, not the stack checkout {stack}"
+    return ""
+
+
+def handoff(root: str, cfg: dict, run=stack_repair._run, log=lambda _t: None) -> dict:
+    """{"state": ok|none|handed|skipped|failed, "name", "owner", "why"}. Makes the stack checkout own the shared project when the
+    main checkout does (see the module docstring). Never raises. `skipped` = a precondition refuses it (lease, window, a
+    live foreign owner, the attempt cap); `failed` = it ran and the post-check did not prove it."""
+    main, stack = persistent_pair(root)
+    projs = [p for p in cfg.get("leftover_projects") or [] if isinstance(p, dict) and p.get("handoff")]
+    name = str(projs[0].get("name")) if projs else ""
+
+    def res(state: str, why: str, owner: str = "") -> dict:
+        return {"state": state, "name": name, "owner": owner, "why": why}
+
+    if not projs:
+        return res("none", "no hand-off project is configured")
+    if not stack_checkout.is_stack_checkout(stack):
+        return res("skipped", f"{stack} is not a stack checkout of {main}")
+    proj = projs[0]
+    try:
+        return _handoff_one(proj, main, stack, cfg, run, log, res)
+    except Exception as e:  # noqa: BLE001 - never ends a run
+        return res("failed", f"the hand-off crashed: {e!r}")
+
+
+def _handoff_one(proj: dict, main: str, stack: str, cfg: dict, run, log, res) -> dict:
+    if not (proj.get("down") and cfg.get("lease_probe") and (proj.get("handoff_up") or cfg.get("stack_up"))):
+        return res("skipped", "the repo's config does not name the down, the bring-up and the lease probe")
+    owner, why = project_owner(proj, cfg, main, run)
+    if owner is None:
+        return res("skipped", why)
+    if not owner:
+        return res("none", "the project is not up", owner)
+    if _same(owner, stack):
+        why = verify(main, cfg, run)
+        return res("failed", why, owner) if why else res("ok", "the stack checkout already owns it", owner)
+    if not _same(owner, main):
+        # Neither persistent checkout: a registered worktree is alive and never touched; an unregistered one is only torn
+        # down through `leftover`'s dead-proof (suite window holder gone + lease free), then brought up from the stack checkout.
+        if os.path.realpath(owner) in registered_worktrees(main):
+            return res("skipped", f"it is owned by the worktree {owner}, which is still registered (alive): not touched", owner)
+        r = _leftover_one(proj, main, cfg, main, run, log)
+        if r["state"] == "skipped":
+            return res("skipped", f"owned by {owner}, which is not one of the two persistent checkouts: {r['why']}", owner)
+        owner = ""
+    win = _window(proj, cfg, main, run)
+    if win is None:
+        return res("skipped", "could not read the suite window, so a live suite is not ruled out", owner)
+    holder, pid = win
+    if holder and not pid.isdigit():
+        return res("skipped", f"the suite window names {holder} without a readable holder pid", owner)
+    if holder and proj.get("pid_probe") and run(_sub(proj["pid_probe"], cfg, main, pid=pid), 60)[0] == 0:
+        return res("skipped", f"the suite window holder pid {pid} ({holder}) is still alive", owner)
+    if not lease_free(cfg, stack, run):
+        return res("skipped", "another run holds the stack lease", owner)
+    with stack_repair._Lock(900) as got:
+        if not got:
+            return res("skipped", "another stack repair held the lock for 15 min", owner)
+        if not lease_free(cfg, stack, run):
+            return res("skipped", "another run holds the stack lease", owner)
+        now = time.time()
+        key = f"handoff:{cfg['vm']}"
+        if len(stack_repair._attempts(key, now)) >= LEFTOVER_MAX_PER_HOUR:
+            return res("skipped", f"{LEFTOVER_MAX_PER_HOUR} hand-offs in the last hour, not trying again", owner)
+        stack_repair._record(key, now)
+        if owner:
+            argv = _sub(proj["down"], cfg, owner)
+            log(f"stack-env: hand-off of {proj.get('name')} from {owner} to {stack}; {' '.join(argv)}")
+            rc, out = run(argv, 900)
+            if rc != 0:
+                tail = out.strip().splitlines()[-1][:160] if out.strip() else ""
+                return res("failed", f"the down from {owner} exited {rc}{': ' + tail if tail else ''}", owner)
+        argv = _sub(proj.get("handoff_up") or cfg["stack_up"], cfg, stack)
+        log(f"stack-env: hand-off bring-up from {stack}; {' '.join(argv)}")
+        rc, out = run(argv, 1800)
+        now_owner, why = project_owner(proj, cfg, main, run)
+        if rc != 0:
+            tail = out.strip().splitlines()[-1][:160] if out.strip() else ""
+            return res("failed", f"the bring-up from {stack} exited {rc}{': ' + tail if tail else ''}", now_owner or "")
+        if not now_owner or not _same(now_owner, stack):
+            return res("failed", f"after the bring-up the project owner is {now_owner or 'nobody'}, expected {stack}"
+                       + (f" ({why})" if why else ""), now_owner or "")
+        bad = verify(main, cfg, run)
+        if bad:
+            return res("failed", bad, now_owner)
+        return res("handed", f"owner {main} -> {stack}: the repo's own down, then the bring-up from the stack checkout", now_owner)
+
 def leftover_line(res: dict) -> str:
     if res["state"] == "repaired":
         return f"STACK-ENV: leftover project {res['name']} repaired ({res['why']})"
@@ -424,9 +574,9 @@ def strip_env_script(cfg: dict, env_script: str | None, command: list[str]) -> t
 def selftest() -> int:
     fails = 0
 
-    def check(name: str, ok: bool) -> None:
+    def check(name: str, ok: bool, why: str = "") -> None:
         nonlocal fails
-        print(("ok   " if ok else "FAIL ") + name)
+        print(("ok   " if ok else "FAIL ") + name + ("" if ok or not why else f" ({why})"))
         fails += 0 if ok else 1
 
     def catalog(d: str, names: list[str]) -> None:
@@ -655,6 +805,100 @@ def selftest() -> int:
               bool(shipped) and shipped["leftover_projects"][0]["name"] == "nightwatch-w108"
               and all(shipped["leftover_projects"][0].get(k) for k in ("owner_probe", "window_probe", "pid_probe", "down"))
               and "opmode-stack.sh down" in shipped["leftover_projects"][0]["down"][-1])
+        # ---- the ownership hand-off main <-> stack checkout: fakes and temp repos only, never a VM or ~/.agentic ----
+        os.environ.update({"GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t", "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t"})
+        horigin = os.path.join(os.path.realpath(tmp), "horigin.git")
+        hmain = os.path.join(os.path.realpath(tmp), "hrepo")
+        subprocess.run(["git", "init", "-q", "--bare", horigin], check=True)
+        subprocess.run(["git", "clone", "-q", horigin, hmain], check=True, stderr=subprocess.DEVNULL)
+        open(os.path.join(hmain, "a.txt"), "w").write("1\n")
+        subprocess.run(["git", "-C", hmain, "add", "a.txt"], check=True)
+        subprocess.run(["git", "-C", hmain, "commit", "-q", "-m", "one"], check=True)
+        subprocess.run(["git", "-C", hmain, "push", "-q", "origin", "HEAD:refs/heads/dev"], check=True, stderr=subprocess.DEVNULL)
+        open(os.path.join(hmain, ".runtime.env"), "w").write("A=hand-off-secret\n")
+        rc_, out_ = stack_checkout.sync(hmain, "origin/dev", state_files=[".runtime.env"])
+        hstack = stack_checkout.stack_path(hmain)
+        check("hand-off setup: the stack checkout exists with the settings file copied", rc_ == 0 and os.path.isfile(os.path.join(hstack, ".runtime.env")))
+        hwork = os.path.join(os.path.realpath(tmp), "hrepo-W-9")
+        subprocess.run(["git", "-C", hmain, "worktree", "add", "-q", "--detach", hwork], check=True, stderr=subprocess.DEVNULL)
+        hcfg = {"vm": "h1", "lease_probe": ["lease"], "stack_up": ["unused"], "env_file": ".runtime.env",
+                "leftover_projects": [{"name": "proj", "handoff": True, "owner_probe": ["owner"], "window_probe": ["window"],
+                                       "pid_probe": ["pid", "{pid}"], "down": ["down", "{root}"], "handoff_up": ["up", "{root}"]}]}
+        hs = {"owner": hmain, "lease": 0, "window": "", "up_sets": True, "down_rc": 0, "up_rc": 0}
+        hcalls: list[list[str]] = []
+
+        def hfake(argv, _t):
+            hcalls.append(argv)
+            if argv[0] == "owner":
+                return 0, hs["owner"] + "\n"
+            if argv[0] == "lease":
+                return hs["lease"], ""
+            if argv[0] == "window":
+                return 0, hs["window"]
+            if argv[0] == "pid":
+                return 1, ""
+            if argv[0] == "down":
+                if hs["down_rc"] == 0:
+                    hs["owner"] = ""
+                return hs["down_rc"], ""
+            if argv[0] == "up":
+                if hs["up_sets"] and hs["up_rc"] == 0:
+                    hs["owner"] = argv[1]
+                return hs["up_rc"], ""
+            return 0, ""
+
+        def acts() -> list[str]:
+            return [a[0] for a in hcalls if a[0] in ("down", "up")]
+
+        r = handoff(hmain, hcfg, hfake)
+        check("hand-off: the main checkout owns it and the lease is free: its own down from main, then the bring-up from the stack checkout, proven",
+              r["state"] == "handed" and acts() == ["down", "up"] and [a for a in hcalls if a[0] == "down"][0][1] == hmain
+              and [a for a in hcalls if a[0] == "up"][0][1] == hstack and hs["owner"] == hstack, str(r))
+        hcalls.clear()
+        check("hand-off: a run in the stack checkout itself finds it already owned: nothing run", handoff(hstack, hcfg, hfake)["state"] == "ok" and acts() == [])
+        hcfg["vm"] = "h2"
+        hs.update(owner=hmain, lease=1)
+        hcalls.clear()
+        r = handoff(hmain, hcfg, hfake)
+        check("hand-off: refused when the stack lease is held: no down, no bring-up, the reason names the lease",
+              r["state"] == "skipped" and "lease" in r["why"] and acts() == [] and hs["owner"] == hmain, str(r))
+        hcfg["vm"] = "h3"
+        hs.update(lease=0, up_sets=False)
+        hcalls.clear()
+        r = handoff(hmain, hcfg, hfake)
+        check("hand-off: up exits 0 but the owner did not change to the stack checkout: failed with the exact reason, never handed",
+              r["state"] == "failed" and "expected" in r["why"] and hstack in r["why"] and r["state"] != "handed", str(r))
+        hs.update(owner=hmain)
+        check("verify: the project still owned by the main checkout is not usable", "is owned by" in verify(hmain, hcfg, hfake))
+        hcfg["vm"] = "h4"
+        hs.update(owner=hwork, up_sets=True)
+        hcalls.clear()
+        r = handoff(hmain, hcfg, hfake)
+        check("hand-off: a project owned by a still-registered worktree is never touched", r["state"] == "skipped" and "alive" in r["why"] and acts() == [], str(r))
+        hcfg["vm"] = "h5"
+        hs.update(owner=hmain, down_rc=1)
+        hcalls.clear()
+        r = handoff(hmain, hcfg, hfake)
+        check("hand-off: a failed down stops there (no bring-up) and says so", r["state"] == "failed" and acts() == ["down"] and "down" in r["why"], str(r))
+        hs.update(down_rc=0)
+        for v in ("h6",):
+            hcfg["vm"] = v
+            for _ in range(LEFTOVER_MAX_PER_HOUR):
+                hs.update(owner=hmain)
+                handoff(hmain, hcfg, hfake)
+            hs.update(owner=hmain)
+            hcalls.clear()
+            r = handoff(hmain, hcfg, hfake)
+            check("hand-off: bounded per hour, then skipped without running anything", r["state"] == "skipped" and "last hour" in r["why"] and acts() == [], str(r))
+        os.remove(os.path.join(hstack, ".runtime.env"))
+        hs.update(owner=hstack)
+        why = verify(hmain, hcfg, hfake)
+        check("verify: a stack checkout without the settings file is not usable, the reason names the file", ".runtime.env" in why and "stack checkout" in why, why)
+        check("verify and the hand-off never print a value", "hand-off-secret" not in why and "hand-off-secret" not in str(r))
+        check("the shipped config-harness entry has the hand-off keys and the state list",
+              bool(shipped) and shipped["leftover_projects"][0].get("handoff") is True
+              and "opmode-stack.sh up" in shipped["leftover_projects"][0]["handoff_up"][-1]
+              and ".runtime.env" in shipped.get("stack_state_files", []))
     print(f"{'FAILED' if fails else 'passed'}: stack_env selftest")
     return 1 if fails else 0
 

@@ -84,7 +84,9 @@ the recorded checkpoints.
       Lima VM down, a compose service unhealthy, the disk low), reported
       instead of asked about. The session stays open; the runner answers with
       `RUNNER ENV <kind>: repaired ...` (carry on) or `RUNNER ENV <kind>: not
-      repaired ...` (ask the owner as usual). See "Standing repair" below.
+      repaired ...` (ask the owner as usual; a `stack` report of a /stub run is
+      never asked: it is repaired and proven, or the run stops with `STACK-ENV:
+      stopped`). See "Standing repair" below.
     - `RUNNER: DONE` — the dossier is finished: the runner records `done`
       and exits 0.
     - `RUNNER: REPLAN <why>` — the owner ruled the dossier back to `/plan`
@@ -870,7 +872,8 @@ stage, and again on a `RUNNER: ENV vm|stack ...` line:
 - A dossier run is never answered with an owner question about the shared stack (owner ruling 2026-11-19, "if it is
   safe it should run it without asking me"). When the repair is off, bounded or fails, the session is told to skip its
   live stack tests, defer those criteria to the /stub full suite and head the PR note with `STACK-ENV: skipped — ...`.
-  A /stub run owns the stack and keeps its behaviour; a disk and a stopped VM keep theirs.
+  A /stub run owns the stack and, since 2026-11-27, never gets an owner question about it either (see "A /stub run's
+  stack ownership" below); a disk and a stopped VM keep theirs.
 
 **Stack settings behind a branch** (`scripts/stack_env.py`, called by `run_tests.py --vm`; on by default,
 `ASD_STACK_ENV_CHECK=0` turns the check off, `ASD_STACK_ENV_SYNC=0` keeps the check but never restarts).
@@ -906,6 +909,40 @@ window's holder pid is no longer alive in the VM (or there is no window) AND the
   switch off) the session is answered to skip its live stack tests, defer those criteria to the stub's full suite and head
   the PR note with `STACK-ENV: skipped — leftover project ...`. Never an owner question. A `suite_window_active` or
   `stack_lease_refused` refusal (another run's suite is live) gets the same skip without any repair.
+
+**A /stub run's stack ownership** (`run_dossier.handle_stub_stack`, `stack_env.handoff()` / `verify()`,
+`stack_checkout.sync_state()`; owner ruling 2026-11-27: the same question ("May I bring the shared test stack up from the
+stack checkout?", Q6, Q10) kept reaching the owner). Causes, all mechanical: the stack checkout (`<main>-stack`) is a fresh
+clone with none of the main checkout's untracked state, so the repo's env script refuses there ("no stack settings file");
+the shared project belongs to whichever checkout last ran its bring-up (the owner had it brought up from the main checkout), so
+the op-mode bring-up from the stack checkout refuses with `foreign_project_state owner=<main>`; and the old repair never
+looked at ownership. Now, on a /stub session's `RUNNER: ENV stack ...` (never a question, whatever the detail):
+1. State copy: `stack_checkout.py sync` (and the handler again) copies the main checkout's `stack_state_files` (config-harness:
+   `.runtime.env`, `deploy/compose/nats/opmode/` where present) into the stack checkout when missing or older: files 0600,
+   directories 0700, temp file + rename, symlinks skipped, contents never read into a printed string (`STACK-STATE: copied
+   <paths>` names paths only). It only copies the main checkout's existing set and never generates anything, so the shared
+   broker keeps ONE NATS key set (a freshly generated operator/SYS/account set crash-loops it with a SYS mismatch). Each
+   copied path is added to the stack checkout's own `.git/info/exclude` unless git already ignores it (the opmode dir is
+   ignored only by the main checkout's local exclude), so the dirty-tree refusal does not trip on it.
+2. Hand-off (`handoff()`; `handoff: true` on a `leftover_projects` entry): only when the project's owner (`owner_probe`) is
+   the main checkout (or the stack checkout needs it back), no suite window holder is alive, and the stack lease is free:
+   the repo's own `down` from the OWNING checkout, then the entry's `handoff_up` (default `stack_up`; config-harness:
+   `opmode-stack.sh up`) from the stack checkout, under the repair lock, at most 3 per hour per VM (key `handoff:<vm>`). Only
+   between the two persistent checkouts: an owner that is a still-registered worktree is a skip and never touched; an
+   unregistered one is first put through `leftover()`'s dead-proof. A held lease or window, a down or bring-up that fails, or
+   the hourly cap is a skip/fail with the exact reason, nothing else is run.
+3. Proof before "repaired": `stack_env.verify()` needs the owner probe to name the stack checkout (a project that is up under
+   any other checkout fails it) and the env script's settings file to exist in the stack checkout. `stack_repair.repair()`
+   takes the same check as `verify=` for a /stub run, so "up.sh exited 0 and compose is healthy" alone is `failed: not
+   verified: ...`. (Why the old answer was wrong: compose health is read from the default compose project in `{root}`, the
+   repair ran `stack_up` from the main checkout and never looked at the op-mode project's `working_dir` label, `leftover`
+   only ran for dossier runs and filtered by a project name the session's refusal line did not contain, and a report that
+   found compose healthy was answered "repaired by the runner (healthy now)" with nothing done or checked.)
+4. Failure: the runner ends the run itself, `failed`, head `STACK-ENV: stopped \u2014 <reason>` (the dashboard's run status), no
+   owner question and no retry prompt (`STACK_ENV_STOP_RE`), and tells the session nothing more. The owner re-runs /stub once
+   the reason (a live suite, a held lease) is gone.
+Config keys: `stack_state_files` (repo level, a trailing `/` marks a directory) and, per `leftover_projects` entry, `handoff`
+and `handoff_up`.
 **A stale shared fixture** (`stack_env.fixture()`, same caller, after the settings check; `ASD_STACK_FIXTURE_REBUILD=0`
 keeps the check but never rebuilds). The repo's env script refuses every DB-backed test when the shared fake-llm
 fixture serves another source stamp than the tree's, and the stamp includes the root `Cargo.toml`/`Cargo.lock`, so a
