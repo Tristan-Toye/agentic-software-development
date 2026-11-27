@@ -144,9 +144,9 @@ timeline, write it in the record, and go on. Never ask the owner for these:
 
 - **Stale stack settings** (`.runtime.env` lacks names the catalog has, a
   test or `test-env.sh` says to re-run `up.sh`, or "no stack settings file"):
-  `stack_checkout.py sync` copies the main checkout's untracked stack state
-  (`.runtime.env`, the key set the repo's config lists) into the stack
-  checkout, and `run_tests.py --vm` syncs the names itself (`STACK-ENV:` in its
+  `stack_checkout.py sync` rebuilds the settings file in the stack checkout
+  with the repo's own step (config `stack_env_regen`; never a copy of the main
+  checkout's file) and copies the key set the repo's config lists, and `run_tests.py --vm` syncs the names itself (`STACK-ENV:` in its
   output). When it reports `skipped`, report `RUNNER: ENV stack <detail>`
   and let the runner prove or stop (below); never run `up.sh` yourself.
 - **A stopped VM or an unhealthy stack service**: report
@@ -159,7 +159,9 @@ timeline, write it in the record, and go on. Never ask the owner for these:
   project from the main checkout to the stack checkout itself (the repo's own
   down, then the bring-up from the stack checkout, free lease, bounded) and
   answers `repaired ... verified` only once the owner probe names the stack
-  checkout and the env script's settings file exists. When it cannot prove
+  checkout and the env script's settings file exists (the runner regenerates
+  it with the repo's own step when missing or stale; a failed regen is
+  `STACK-ENV: stopped — settings file regen failed: ...`). When it cannot prove
   that it ends the run itself with the status `STACK-ENV: stopped — <reason>`
   on the dashboard. **Never an owner question**, never tear down or bring up
   the shared project by hand, and never copy or print the key files.
@@ -337,10 +339,11 @@ The integrated verdict, once per head, in the VM, on the guarded path:
    re-run. It is `<main checkout>-stack`, a local clone (its own `.git`, so a
    repository whose `up.sh` refuses worktrees accepts it) that outlives the
    run, always detached and never removed, so the shared stack may be bound
-   to it. `sync` also copies the main checkout's untracked stack state (the
-   config's `stack_state_files`: `.runtime.env`, the key set) into it, never
-   printing a value (`STACK-STATE: copied <paths>`), so its first run has its
-   settings file; a project the main checkout owns is handed to it by the
+   to it. `sync` also regenerates its settings file with the repo's own step (config
+   `stack_env_regen`, never a copy of the main checkout's `.runtime.env`) and
+   copies the key set the config's `stack_state_files` lists, never printing a
+   value (`STACK-STATE: copied <paths>`), so its first run has its settings
+   file; a project the main checkout owns is handed to it by the
    runner (`RUNNER: ENV stack ...`, never a question).
    **Never check out, detach or switch the main checkout**: it
    stays on development, read-only (the main-checkout lock refuses it, and

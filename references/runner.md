@@ -939,13 +939,22 @@ clone with none of the main checkout's untracked state, so the repo's env script
 the shared project belongs to whichever checkout last ran its bring-up (the owner had it brought up from the main checkout), so
 the op-mode bring-up from the stack checkout refuses with `foreign_project_state owner=<main>`; and the old repair never
 looked at ownership. Now, on a /stub session's `RUNNER: ENV stack ...` (never a question, whatever the detail):
-1. State copy: `stack_checkout.py sync` (and the handler again) copies the main checkout's `stack_state_files` (config-harness:
-   `.runtime.env`, `deploy/compose/nats/opmode/` where present) into the stack checkout when missing or older: files 0600,
-   directories 0700, temp file + rename, symlinks skipped, contents never read into a printed string (`STACK-STATE: copied
-   <paths>` names paths only). It only copies the main checkout's existing set and never generates anything, so the shared
-   broker keeps ONE NATS key set (a freshly generated operator/SYS/account set crash-loops it with a SYS mismatch). Each
-   copied path is added to the stack checkout's own `.git/info/exclude` unless git already ignores it (the opmode dir is
-   ignored only by the main checkout's local exclude), so the dirty-tree refusal does not trip on it.
+1. Settings file and state: the stack checkout's settings file (config-harness `.runtime.env`) is NEVER copied from the main
+   checkout (owner ruling 2026-11-27): each checkout rebuilds it with the repo's own step, the config key `stack_env_regen`
+   (`command` run for the stack checkout, the `path` it writes, the encrypted `source`; config-harness: the host-wrapper
+   `host.sh exec -- deploy/scripts/up.sh --env-only` from the stack checkout: it writes `.runtime.env` and stops before any
+   compose call (config-harness #720), and the age key reaches sops only through `host.sh exec`; an up.sh without the mode
+   refuses the flag with exit 2 before any docker call, so the run stops instead of restarting the stack). `stack_checkout.py sync` and `stack_env.ensure_settings()` (in
+   `verify()` and the handler) run it when the file is missing in the stack checkout or older than `source`, keep it 0600 and
+   add it to the clone's `.git/info/exclude` unless git ignores it; a fresh file is not regenerated. A failing step ends the
+   run with `STACK-ENV: stopped \u2014 settings file regen failed: <exit code + last output line, scrubbed>`; there is no copy
+   fallback and no value is printed. The remaining `stack_state_files` (config-harness: `deploy/compose/nats/opmode/` where
+   present; a separate change moves the NATS keys to Secret Manager) are still copied from the main checkout when missing or
+   older: files 0600, directories 0700, temp file + rename, symlinks skipped, contents never read into a printed string
+   (`STACK-STATE: copied <paths>` names paths only). It only copies the main checkout's existing set and never generates
+   anything, so the shared broker keeps ONE NATS key set (a freshly generated operator/SYS/account set crash-loops it with a
+   SYS mismatch). Each copied path is added to the stack checkout's own `.git/info/exclude` unless git already ignores it (the
+   opmode dir is ignored only by the main checkout's local exclude), so the dirty-tree refusal does not trip on it.
 2. Hand-off (`handoff()`; `handoff: true` on a `leftover_projects` entry): only when the project's owner (`owner_probe`) is
    the main checkout (or the stack checkout needs it back), no suite window holder is alive, and the stack lease is free:
    the repo's own `down` from the OWNING checkout, then the entry's `handoff_up` (default `stack_up`; config-harness:
@@ -963,7 +972,7 @@ looked at ownership. Now, on a /stub session's `RUNNER: ENV stack ...` (never a 
 4. Failure: the runner ends the run itself, `failed`, head `STACK-ENV: stopped \u2014 <reason>` (the dashboard's run status), no
    owner question and no retry prompt (`STACK_ENV_STOP_RE`), and tells the session nothing more. The owner re-runs /stub once
    the reason (a live suite, a held lease) is gone.
-Config keys: `stack_state_files` (repo level, a trailing `/` marks a directory) and, per `leftover_projects` entry, `handoff`
+Config keys: `stack_env_regen` and `stack_state_files` (repo level, a trailing `/` marks a directory) and, per `leftover_projects` entry, `handoff`
 and `handoff_up`.
 **A stale shared fixture** (`stack_env.fixture()`, same caller, after the settings check; `ASD_STACK_FIXTURE_REBUILD=0`
 keeps the check but never rebuilds). The repo's env script refuses every DB-backed test when the shared fake-llm
