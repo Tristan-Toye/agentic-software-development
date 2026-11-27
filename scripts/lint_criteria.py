@@ -23,6 +23,12 @@ no model.
                            no decision record (`docs/adr`, ADR): Phase 8a ships
                            one, so the criterion forbids the record (LRN-0115)
 
+    no-discriminating-input  a criterion says the behaviour passes/holds/works ("by construction") and names no input
+                           value, identifier or negative case, so no test can fail it
+    refusal-text-uncovered   the `## Contract` quotes a refusal or error text (a backticked phrase on a line that
+                           refuses, rejects or raises) that no criterion names: the text is unpinned
+    per-case-undefined       a criterion says "per case" / "each case" / "every variant" and enumerates no cases
+
 A finding is a defect of the dossier, fixed in the dossier (`dossier_edit.py`)
 before the fan-out; it is never a question for a blind author.
 
@@ -58,6 +64,15 @@ COUNT = re.compile(r"\b(?:exactly\s+)?(\d{1,6})\s+(?!ms\b|s\b|seconds?\b|minutes
 COUNT_NOUNS = re.compile(r"\b(?:values?|rows?|columns?|keys?|items?|entries|entry|files?|tests?|members?|"
                          r"events?|records?|fields?|bytes?|lines?|calls?|retries|attempts?|ids?|tables?|"
                          r"migrations?|variants?|kinds?|nodes?|edges?|users?|requests?)\b", re.I)
+PASSES = re.compile(r"\b(?:passes|holds|works|by construction|is correct|behaves)\b", re.I)
+INPUT_VALUE = re.compile(r"`[^`]+`|\d|\"[^\"]+\"|\b(?:refus\w*|reject\w*|raises?|throws?|errors?|fails?|empty|absent|missing|none|null|"
+                         r"invalid|unknown|exit)\b", re.I)
+PER_CASE = re.compile(r"\b(?:per|for each|for every|in each|in every|each|every)[- ](?:case|variant|kind|mode|scenario|"
+                      r"branch|class|type|input)s?\b", re.I)
+# A rule whose dry run over the real dossiers showed a high false-positive rate reports as a warning: printed with
+# a `CRITERIA-LINT-WARN` prefix, never failing the run. `refusal-text-uncovered` keeps one in five hits a quoted
+# command or log phrase rather than a refusal text, so it warns until its detection is tighter.
+WARN_RULES = frozenset({"refusal-text-uncovered"})
 CHANGED_SET = re.compile(r"git diff[^.\n]*--name-only|\bchanged[- ]files?\b|\bfiles? changed\b|\bname[sd]? (?:exactly )?\w+ files\b", re.I)
 PINNED_SET = re.compile(r"\bexactly \w+ files?\b|\b(?:second|third|fourth|fifth|sixth|extra|further|additional|other) files?\b"
                         r"|\bno other files?\b|\bnothing else\b|\bonly these\b", re.I)
@@ -101,6 +116,15 @@ def lint_one(number: int, text: str) -> list[str]:
     if counts and not ENV.search(text):
         out.append("criterion %d [count-environment] %r states a count with no `env:` and no frozen command: "
                    "say where the number is counted" % (number, counts[0].group(0)))
+    claim = re.sub(r"\(owner:[^)]*\)", "", text)
+    if PASSES.search(claim) and not INPUT_VALUE.search(PASSES.sub("", claim)):
+        out.append("criterion %d [no-discriminating-input] says the behaviour %r but names no input value, "
+                   "identifier or negative case: say which input makes it pass and which makes it fail"
+                   % (number, PASSES.search(flat).group(0)))
+    pc = PER_CASE.search(flat)
+    if pc and len(re.findall(r"`[^`]+`", text)) < 2 and not re.search(r"[:(][^)]*,[^)]*[,)]|\bone of\b", flat):
+        out.append("criterion %d [per-case-undefined] %r enumerates no cases: list each case, or say how the "
+                   "set is derived" % (number, pc.group(0)))
     if CHANGED_SET.search(flat) and PINNED_SET.search(flat) and not RECORD.search(flat):
         out.append("criterion %d [changed-file-set] pins the changed files and names no decision record: "
                    "Phase 8a ships an ADR and its index, so list `docs/adr/` beside the files or scope the "
@@ -108,11 +132,38 @@ def lint_one(number: int, text: str) -> list[str]:
     return out
 
 
+REFUSAL_LEAD = re.compile(r"\b(?:refus\w*|reject\w*|raises?|throws?|errors?|fails?)\b[^`\n]{0,48}$", re.I)
+
+
+def contract_refusal_texts(text: str) -> list[str]:
+    m = re.search(r"^## Contract\s*$(.*?)(?=^## |\Z)", text, re.M | re.S)
+    out: list[str] = []
+    for ln in (m.group(1) if m else "").splitlines():
+        for mt in re.finditer(r"`([^`]+)`", ln):
+            tok = mt.group(1).strip()
+            prose = " " in tok and not tok.startswith("-") and tok.lower() == tok
+            if prose and not re.search(r"[(){}=<>;:/\\]|->", tok) and REFUSAL_LEAD.search(ln[:mt.start()]):
+                if tok not in out:
+                    out.append(tok)
+    return out
+
+
+def is_warning(finding: str) -> bool:
+    m = re.search(r"\[([\w-]+)\]", finding)
+    return bool(m and m.group(1) in WARN_RULES)
+
+
 def lint_text(text: str) -> tuple[list[str], int]:
     items = criteria(text)
     findings: list[str] = []
     for n, body in items:
         findings.extend(lint_one(n, body))
+    if items:
+        crit = " ".join(b for _, b in items).replace("`", "").lower()
+        for tok in contract_refusal_texts(text):
+            if tok.lower() not in crit:
+                findings.append("contract [refusal-text-uncovered] the refusal text %r appears in no criterion: "
+                                "pin it in one" % tok)
     return findings, len(items)
 
 
@@ -158,6 +209,29 @@ def selftest() -> int:
     f, _ = lint_text(pinned.replace("exactly three files;", "exactly three files plus the ADR and docs/adr/index.md;"))
     check("LRN-0115: the same criterion naming the record passes", not f)
     check("no criteria section", lint_text("## Other\n1. x\n") == ([], 0))
+    # review-cluster rules: each fires on its defect and is silent on its negative control
+    unfalsifiable = ("## Acceptance criteria\n1. The cleanup passes by construction. (owner: tests/a.py; env: CI)\n"
+                     "2. Each case is handled the same way per case. (owner: tests/a.py; env: CI)\n")
+    f, _ = lint_text(unfalsifiable)
+    j = "\n".join(f)
+    check("passes with no input is flagged", "criterion 1 [no-discriminating-input]" in j)
+    check("per case with no cases is flagged", "criterion 2 [per-case-undefined]" in j)
+    controls = ("## Acceptance criteria\n1. The cleanup passes for `src/a` and refuses `src/b`. "
+                "(owner: tests/a.py; env: CI)\n"
+                "2. For each case (`empty`, `absent`, `full`) the store answers `none`. (owner: tests/a.py; env: CI)\n")
+    f, _ = lint_text(controls)
+    check("an input value or an enumerated list is silent: %s" % f, f == [])
+    contract = "## Contract\n```\n/// Refuses with `claim lost` when the lease moved.\n```\n\n"
+    uncovered = contract + "## Acceptance criteria\n1. A moved lease is refused. (owner: tests/a.py; env: CI)\n"
+    covered = contract + "## Acceptance criteria\n1. A moved lease is refused with `claim lost`. (owner: tests/a.py; env: CI)\n"
+    f, _ = lint_text(uncovered)
+    check("a refusal text no criterion names is flagged", len(f) == 1 and "[refusal-text-uncovered]" in f[0])
+    check("it is a warning, not a failure", bool(f) and is_warning(f[0]))
+    f, _ = lint_text(covered)
+    check("a refusal text a criterion names is silent: %s" % f, f == [])
+    mention = "## Contract\n```\n/// Runs `zfs clone` on the pool.\n```\n\n## Acceptance criteria\n1. A clone exists. (owner: t; env: CI)\n"
+    f, _ = lint_text(mention)
+    check("a command that is no refusal is silent", f == [])
     with tempfile.TemporaryDirectory() as tmp:
         p = os.path.join(tmp, "W.md")
         with open(p, "w") as fh:
@@ -183,10 +257,12 @@ def main(argv: list[str]) -> int:
     if not count:
         print("lint_criteria: no `## Acceptance criteria` section with numbered items", file=sys.stderr)
         return 2
+    errors = [f for f in findings if not is_warning(f)]
     for f in findings:
-        print("CRITERIA-LINT " + f)
-    print("CRITERIA-LINT: %d finding(s) over %d criteria" % (len(findings), count))
-    return 1 if findings else 0
+        print(("CRITERIA-LINT-WARN " if is_warning(f) else "CRITERIA-LINT ") + f)
+    print("CRITERIA-LINT: %d finding(s), %d warning(s) over %d criteria"
+          % (len(errors), len(findings) - len(errors), count))
+    return 1 if errors else 0
 
 
 if __name__ == "__main__":

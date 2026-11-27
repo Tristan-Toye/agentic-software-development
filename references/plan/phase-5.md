@@ -17,7 +17,13 @@ python3 ${PLUGIN_ROOT}/scripts/plan_flow.py register --root ${RUN_ROOT} --dossie
 The validator checks the front matter, the section set (with `## Decisions`
 for `flow: 2`), path disjointness, the criterion shapes (EARS, quality
 scenario, a non-empty `Check:` command), anchor existence and the ASD-STE100
-rules. `register` checks the decision register: the seven mandatory rows and
+rules. For a dossier that is not yet `done` it also runs the review-cluster rules, each
+named in its message: `[approach-rejected]` (`## Approach` names a rejected option; a DEFECT),
+`[contract-covers-paths]` (a file the contract or a criterion's `(owner: ...)` names is under no
+work package; a DEFECT), `[contract-failure-doc]` (a member that can fail or takes a key/id/path
+documents its failure or absent case; a WARNING) and `[anchor-symbol]` (the backticked symbol of
+the sentence appears within 8 lines of the cited `path:line`; a WARNING). Fix a WARNING of these
+too: each one is a finding the reviewer raised on earlier dossiers. `register` checks the decision register: the seven mandatory rows and
 their subsections, the CONFIRM cap and triggers, every deferral naming who
 decides and when, and every FIX row's token present in `## Contract` or
 `## Work packages`. Fix every DEFECT either reports. Never spend a review on
