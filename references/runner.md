@@ -706,6 +706,50 @@ the last `ASD_DISK_IDLE_MIN` minutes (default 60). One reclaim runs at a time
 clean what only it knows, such as build output inside a VM.
 `disk_guard.py status` lists what a reclaim would remove.
 
+**A VM's Docker disk.** A repository whose Docker runs in a Colima profile or a
+Lima instance has a disk the Mac's free space never shows. The podcast engine's
+Colima profile `podcast-engine` has 30 GB, and each test run rebuilds ~1.5 GB
+stage images under the same tag, so the old ones pile up dangling until
+integration tests fail with "no space left on device". `disk_guard.py` therefore
+also reads each active repository's Docker engines:
+
+- **Which engines.** In this order: `ASD_DISK_DOCKER_ENGINES` (comma-separated
+  `kind:name[:context]`, e.g. `colima:podcast-engine,lima:nightwatch`; every
+  repository; `none` turns the VM guard off); else the repository's
+  `.agentic/docker-engines.json`,
+  `{"engines": [{"kind": "colima", "name": "podcast-engine", "context": "colima-podcast-engine"}]}`
+  (`context` optional: `colima-<profile>`, `colima` for the default profile, or
+  `lima-<instance>`); else detection from the repository's `scripts/`,
+  `.agentic/` and `deploy/` `*.sh` files: a literal `colima <cmd> --profile P`
+  (or a `PROFILE="P"` line beside a colima call) and `limactl shell I`. A
+  repository that picks its engine at run time lists it in the config file.
+  `ASD_DISK_VM_GUARD=0` turns the whole VM guard off.
+- **The reading.** In the VM, the disk that holds `/var/lib/docker`:
+  `colima ssh -p P -- df -P /var/lib/docker` or `limactl shell I -- df -P ...`
+  (falling back to `/`), as free GiB and a free fraction. A VM that does not
+  answer is left alone: it counts as not low, and the guard never starts it.
+  `disk_guard.py status --json` lists them as `engines`; `disk_guard.py engines
+  [--root R]` prints only those.
+- **The floor.** An engine is low below `ASD_DISK_VM_FLOOR_PCT` (default 15) percent
+  free or `ASD_DISK_VM_FLOOR_GIB` (default 4) GiB free, whichever trips first.
+- **The reclaim.** Only for a low engine, in order, stopping once it is above the
+  floor: `docker --context C image prune -f --filter until=1h` (dangling images
+  only, never `-a`), then `docker --context C builder prune -f --filter until=1h`.
+  `ASD_DISK_VM_YOUNG` (default `1h`) is the age; younger layers survive, so a
+  running build is safe. It never touches a volume, a container, a tagged image,
+  and never runs `colima stop/start/delete`, `limactl stop/start` or a resize. It
+  logs what each step freed.
+- **The runner.** `take_slot` also queues a run whose repository has a low engine
+  (event "queued: Docker engine X has N GiB of M free ..."), starts the same
+  reclaim, and starts the stage once the engine has room. The reading is cached
+  for `ASD_DISK_VM_TTL` seconds (default 60).
+- **The dashboard.** The 5-minute check covers the engines too: a low engine starts
+  a reclaim, and if it is still low afterwards the owner gets one alert (until the
+  engine is back above the floor) naming the engine, its free space and the
+  remaining options: resize the VM disk, or prune tagged images by hand. A reclaim
+  is retried at most every 30 minutes; the home page shows a banner per low engine
+  (`engines` in the `disk` reading).
+
 **The sweep.** A repository's own build output can fill while the host still
 has room: a VM's disk holds a build directory per worktree and, as a sparse
 image, gives nothing back to the host until it is trimmed. So the dashboard

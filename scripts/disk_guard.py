@@ -22,6 +22,16 @@ fails every command with an Input/output error. This script is the one place tha
   `sweep` runs the same hook on a timer whatever the free space (the dashboard, hourly), with the dossier worktrees
   whose run is no longer live and whose host build is idle: what a VM keeps fills on its own.
 
+- **A VM's Docker disk.** A repository whose Docker runs in a Colima profile or a Lima instance has a disk of its
+  own (30 GB for the podcast engine), which fills with dangling stage images. Each engine is read in the VM
+  (`colima ssh -p P -- df -P /var/lib/docker`, `limactl shell I -- df -P …`); below the VM floor
+  (`ASD_DISK_VM_FLOOR_PCT` 15 % or `ASD_DISK_VM_FLOOR_GIB` 4 GiB free) a reclaim runs `docker image prune -f` (dangling
+  only, never `-a`) then `docker builder prune -f`, both `--filter until=1h`: never a volume, a container, a tagged
+  image or a young layer. A VM is never started, stopped, deleted or resized. Engines: `ASD_DISK_DOCKER_ENGINES`
+  (`kind:name[:context],…`, or `none`), else `<repo>/.agentic/docker-engines.json`
+  (`{"engines": [{"kind": "colima", "name": "podcast-engine", "context": "colima-podcast-engine"}]}`), else detected
+  from the repo's scripts. `ASD_DISK_VM_GUARD=0` turns the VM guard off.
+
 The runner refuses to start a stage below `ASD_DISK_FLOOR_GIB` (default 30) GiB free: it queues, starts a reclaim,
 and goes on once the disk has room (run_dossier.py `take_slot`). The dashboard checks every 5 minutes, reclaims
 below the reclaim threshold, and shows a banner below the floor (references/runner.md, "Disk space").
@@ -29,7 +39,8 @@ below the reclaim threshold, and shows a banner below the floor (references/runn
 # Usage
 
     disk_guard.py status [--json]          free space, thresholds, and what a reclaim would remove
-    disk_guard.py reclaim [--dry-run]      reclaim until the target is free (one reclaim at a time; a second exits 0)
+    disk_guard.py reclaim [--dry-run]      reclaim until the target is free, and prune a low VM engine (one at a time)
+    disk_guard.py engines [--root R]       JSON: the Docker engines (of repo R, or every active repo) and their free space
     disk_guard.py sweep                    run each repo's .agentic/reclaim.sh with its finished runs' idle worktrees
     disk_guard.py --selftest
 """
@@ -177,13 +188,186 @@ def candidates(now: float | None = None) -> list[dict]:
     return sorted(rows, key=lambda r: (r["rank"] is None, r["rank"] or 0, -r["idleMin"]))
 
 
+# ---- Docker engines: a VM's own disk (Colima profile, Lima instance) ----
+# A repository whose Docker runs in a VM has a second disk the Mac's free space never shows: each rebuild of a stage
+# image under the same tag leaves the old one dangling, and a 30 GB VM fills in days ("no space left on device").
+# Which engines a repository uses, in order: `ASD_DISK_DOCKER_ENGINES` (every repo; `none` turns the VM guard off),
+# else `<main>/.agentic/docker-engines.json`, else detection from the repo's scripts (a literal `colima … --profile P`,
+# `PROFILE="P"` beside a colima call, `limactl shell I`). Reclaiming touches dangling images and old build cache only.
+
+VM_KINDS = ("colima", "lima")
+
+
+def vm_floor_pct() -> float: return env_f("ASD_DISK_VM_FLOOR_PCT", 15)
+def vm_floor_gib() -> float: return env_f("ASD_DISK_VM_FLOOR_GIB", 4)
+def vm_young() -> str: return os.environ.get("ASD_DISK_VM_YOUNG") or "1h"
+
+
+def make_engine(kind: str, name: str, context: str | None = None) -> dict | None:
+    if kind not in VM_KINDS or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", name or ""):
+        return None
+    if not context:
+        context = ("colima" if name == "default" else f"colima-{name}") if kind == "colima" else f"lima-{name}"
+    return {"kind": kind, "name": name, "context": context}
+
+
+def parse_engine_env(v: str) -> list[dict]:
+    """`kind:name[:context]` entries, comma-separated; anything else is ignored."""
+    out = []
+    for part in v.split(","):
+        bits = part.strip().split(":")
+        e = make_engine(bits[0], bits[1], bits[2] if len(bits) > 2 and bits[2] else None) if len(bits) >= 2 else None
+        if e:
+            out.append(e)
+    return out
+
+
+def detect_engines(root: str) -> list[dict]:
+    """The engines a repository's scripts name literally (a repo that picks its engine at run time lists it in the config)."""
+    found: dict[tuple, dict] = {}
+    files = []
+    for d in ("scripts", ".agentic", "deploy"):
+        base = os.path.join(root, d)
+        try:
+            files += [os.path.join(base, n) for n in sorted(os.listdir(base)) if n.endswith(".sh")][:60]
+        except OSError:
+            pass
+    for f in files:
+        try:
+            with open(f, errors="replace") as fh:
+                text = fh.read(400_000)
+        except OSError:
+            continue
+        if re.search(r"\bcolima\s+(?:start|status|ssh|stop)\b", text):
+            names = re.findall(r"\bcolima\s+\w+\s+(?:--profile|-p)[ =][\"']?([A-Za-z0-9][\w.-]*)", text)
+            names += re.findall(r"^PROFILE=[\"']?([A-Za-z0-9][\w.-]*)[\"']?\s*$", text, re.M)
+            for n in names:
+                e = make_engine("colima", n)
+                if e: found[("colima", n)] = e
+        for n in re.findall(r"\blimactl\s+shell\s+[\"']?([A-Za-z][\w.-]*)", text):
+            e = make_engine("lima", n)
+            if e: found[("lima", n)] = e
+    return list(found.values())
+
+
+def repo_engines(root: str) -> list[dict]:
+    env = os.environ.get("ASD_DISK_DOCKER_ENGINES")
+    if env is not None and env.strip():
+        return [] if env.strip() == "none" else parse_engine_env(env)
+    try:
+        with open(os.path.join(root, ".agentic", "docker-engines.json")) as fh:
+            cfg = json.load(fh)
+        out = []
+        for c in (cfg.get("engines") if isinstance(cfg, dict) else None) or []:
+            if isinstance(c, dict):
+                e = make_engine(str(c.get("kind", "")), str(c.get("name", "")), str(c["context"]) if c.get("context") else None)
+                if e: out.append(e)
+        return out
+    except (OSError, ValueError):
+        pass
+    return detect_engines(root)
+
+
+def active_roots() -> list[str]:
+    """The main checkouts of the active repos (active-repos.json) plus those the runner has worked in."""
+    roots = set(mains_and_live()[0])
+    try:
+        with open(os.environ.get("ASD_ACTIVE_REPOS_FILE") or os.path.expanduser("~/.agentic/active-repos.json")) as fh:
+            for r in (json.load(fh).get("repos") or {}).values():
+                if isinstance(r, str) and os.path.isdir(r):
+                    roots.add(os.path.realpath(r))
+    except (OSError, ValueError, AttributeError):
+        pass
+    return sorted(roots)
+
+
+def engines_of(roots: list[str]) -> list[dict]:
+    seen: dict[tuple, dict] = {}
+    for r in roots:
+        for e in repo_engines(r):
+            seen.setdefault((e["kind"], e["name"]), {**e, "repos": []})["repos"].append(os.path.basename(r))
+    return list(seen.values())
+
+
+def vm_cmd(e: dict, inner: list[str]) -> list[str]:
+    return (["colima", "ssh", "-p", e["name"], "--", *inner] if e["kind"] == "colima"
+            else ["limactl", "shell", e["name"], "--", *inner])
+
+
+def run_q(cmd: list[str], timeout: int = 60) -> subprocess.CompletedProcess | None:
+    try:
+        return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, stdin=subprocess.DEVNULL)
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+
+def engine_free(e: dict) -> dict:
+    """The free space of the disk that holds /var/lib/docker, read in the VM; `reachable` False when the VM does not
+    answer (a stopped VM is left alone: this script never starts one)."""
+    p = run_q(vm_cmd(e, ["sh", "-c", "df -P /var/lib/docker 2>/dev/null || df -P /"]), 30)
+    out = {**e, "reachable": False, "low": False}
+    if not p or p.returncode != 0:
+        return out
+    rows = [l.split() for l in p.stdout.strip().splitlines() if l.strip() and not l.startswith("Filesystem")]
+    try:
+        total, avail = int(rows[-1][1]) * 1024, int(rows[-1][3]) * 1024
+    except (IndexError, ValueError):
+        return out
+    if total <= 0:
+        return out
+    frac = avail / total
+    out.update(reachable=True, totalGiB=round(total / 2**30, 1), freeGiB=round(avail / 2**30, 1), freeFrac=round(frac, 3),
+               floorPct=vm_floor_pct(), floorGiB=vm_floor_gib(),
+               low=frac * 100 < vm_floor_pct() or avail / 2**30 < vm_floor_gib())
+    return out
+
+
+def engines_status(roots: list[str] | None = None) -> list[dict]:
+    if os.environ.get("ASD_DISK_VM_GUARD") == "0":
+        return []
+    return [engine_free(e) for e in engines_of(roots if roots is not None else active_roots())]
+
+
+def reclaim_engine(e: dict, log, dry: bool = False) -> None:
+    """Dangling images, then old build cache, in the engine's own docker: only until the disk is above the floor.
+    Never `-a`, a volume, a container, a tagged image, or anything younger than ASD_DISK_VM_YOUNG (default 1h)."""
+    steps = [("dangling images", ["image", "prune", "-f", "--filter", f"until={vm_young()}"]),
+             ("build cache", ["builder", "prune", "-f", "--filter", f"until={vm_young()}"])]
+    cur = engine_free(e)
+    if not cur["reachable"]:
+        log(f"engine {e['name']} ({e['kind']}): not reachable, left alone")
+        return
+    start = cur["freeGiB"]
+    for what, args in steps:
+        if not cur["low"]:
+            break
+        log(f"engine {e['name']}: {cur['freeGiB']} GiB free ({cur['freeFrac'] * 100:.0f}%), below the floor; "
+            f"{'would prune' if dry else 'pruning'} {what}")
+        if dry:
+            continue
+        p = run_q(["docker", "--context", e["context"], *args], 900)
+        tail = [l for l in (p.stdout if p else "").splitlines() if "reclaimed" in l.lower()]
+        log(f"engine {e['name']}: {what}: {tail[-1].strip() if tail else ('failed' if not p or p.returncode else 'nothing to remove')}")
+        cur = engine_free(e)
+        if not cur["reachable"]:
+            return
+    if not dry:
+        log(f"engine {e['name']}: {cur['freeGiB']} GiB free ({cur['freeFrac'] * 100:.0f}%) after the reclaim, "
+            f"{cur['freeGiB'] - start:+.1f} GiB{' — still below the floor' if cur['low'] else ''}")
+
+
+def vm_low_for(root: str) -> list[str]:
+    """Names of the engines of one repository that are below the VM floor now (the runner's queue check)."""
+    return [e["name"] for e in engines_status([root]) if e["low"]]
+
+
 def status() -> dict:
     mains, _ = mains_and_live()
     probe = mains[0] if mains else os.path.expanduser("~")
     rows = candidates()
     return {"freeGiB": round(free_gib(probe), 1), "floorGiB": floor_gib(), "targetGiB": target_gib(),
             "low": free_gib(probe) < floor_gib(), "reclaimable": [r for r in rows if r["rank"] is not None],
-            "kept": [r for r in rows if r["rank"] is None], "checked": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
+            "kept": [r for r in rows if r["rank"] is None], "engines": engines_status(), "checked": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
 
 
 def take_lock(log):
@@ -245,10 +429,17 @@ def sweep(log=print) -> int:
     return 0
 
 
+def reclaim_engines(dry: bool = False, log=print) -> None:
+    for e in engines_status():
+        if e["low"]:
+            reclaim_engine(e, log, dry)
+
+
 def reclaim(dry: bool = False, log=print) -> int:
     lock = take_lock(log)
     if lock is None:
         return 0
+    reclaim_engines(dry, log)
     rows = [r for r in candidates() if r["rank"] is not None]
     done: dict[str, list[str]] = {}
     for r in rows:
@@ -325,13 +516,130 @@ def selftest() -> int:
         check("sweep runs the repo's hook even with no checkout (orphans and trim)", os.path.exists(mark))
         st = status()
         check("status reports free space and thresholds", st["freeGiB"] > 0 and st["floorGiB"] == 30 and "reclaimable" in st)
+    fails += selftest_engines()
     print("FAIL" if fails else "PASS (all cases)")
     return 1 if fails else 0
 
 
+def selftest_engines() -> list[str]:
+    """Stub docker, colima and limactl in a temp directory first on PATH: the real ones and ~/.agentic are never used."""
+    fails: list[str] = []
+    def check(name: str, ok: bool) -> None:
+        print(("PASS " if ok else "FAIL ") + name)
+        if not ok: fails.append(name)
+    keep = {k: os.environ.get(k) for k in ("PATH", "ASD_DISK_DOCKER_ENGINES", "ASD_ACTIVE_REPOS_FILE", "ASD_RUNS_DIR", "STUB_LOG", "STUB_DIR")}
+    try:
+        with tempfile.TemporaryDirectory() as t:
+            bindir, state = os.path.join(t, "bin"), os.path.join(t, "state")
+            os.makedirs(bindir); os.makedirs(state)
+            log = os.path.join(t, "calls.log")
+            # df output: total and available 1K blocks come from state/total and state/avail; a prune frees 5 GiB
+            df = ('echo "Filesystem 1024-blocks Used Available Capacity Mounted"; '
+                  'echo "/dev/vda 31457280 0 $(cat "$STUB_DIR/avail") 50% /var/lib/docker"')
+            open(os.path.join(bindir, "colima"), "w").write(f'#!/bin/sh\necho "colima $*" >> "$STUB_LOG"\n[ -f "$STUB_DIR/down" ] && exit 1\n'
+                                                            f'case "$1" in ssh) {df};; *) exit 0;; esac\n')
+            open(os.path.join(bindir, "limactl"), "w").write(f'#!/bin/sh\necho "limactl $*" >> "$STUB_LOG"\n{df}\n')
+            open(os.path.join(bindir, "docker"), "w").write(
+                '#!/bin/sh\necho "docker $*" >> "$STUB_LOG"\n'
+                'case "$*" in *"image prune"*) echo $(( $(cat "$STUB_DIR/avail") + $(cat "$STUB_DIR/image_gain") )) > "$STUB_DIR/avail"; echo "Total reclaimed space: 5GB";;\n'
+                '*"builder prune"*) echo $(( $(cat "$STUB_DIR/avail") + $(cat "$STUB_DIR/cache_gain") )) > "$STUB_DIR/avail"; echo "Total:  2GB";; esac\n')
+            for n in ("colima", "limactl", "docker"):
+                os.chmod(os.path.join(bindir, n), 0o755)
+            def put(avail_gib: float, image_gain_gib: float = 0, cache_gain_gib: float = 0):
+                for n, v in (("avail", avail_gib), ("image_gain", image_gain_gib), ("cache_gain", cache_gain_gib)):
+                    open(os.path.join(state, n), "w").write(str(int(v * 2**20)))
+            calls = lambda: open(log).read().splitlines() if os.path.exists(log) else []
+            os.environ.update(PATH=bindir + os.pathsep + os.environ.get("PATH", ""), STUB_LOG=log, STUB_DIR=state,
+                              ASD_ACTIVE_REPOS_FILE=os.path.join(t, "none.json"), ASD_RUNS_DIR=os.path.join(t, "runs"))
+            os.environ.pop("ASD_DISK_DOCKER_ENGINES", None)
+            pe = os.path.join(t, "pe"); os.makedirs(os.path.join(pe, "scripts"))
+            open(os.path.join(pe, "scripts", "docker-runtime.sh"), "w").write(
+                'PROFILE="podcast-engine"\ncolima status --profile "$PROFILE" --json\ncolima start --profile "$PROFILE" --disk 30\n')
+            check("detects a colima profile from a repo's scripts",
+                  [(e["kind"], e["name"], e["context"]) for e in repo_engines(pe)] == [("colima", "podcast-engine", "colima-podcast-engine")])
+            nw = os.path.join(t, "nw"); os.makedirs(os.path.join(nw, ".agentic"))
+            open(os.path.join(nw, ".agentic", "reclaim.sh"), "w").write('limactl shell nightwatch -- fstrim -av\n')
+            check("detects a lima instance from a repo's scripts", [(e["kind"], e["context"]) for e in repo_engines(nw)] == [("lima", "lima-nightwatch")])
+            os.makedirs(os.path.join(pe, ".agentic"), exist_ok=True)
+            json.dump({"engines": [{"kind": "colima", "name": "other", "context": "ctx-x"}, {"kind": "bad", "name": "x"}]},
+                      open(os.path.join(pe, ".agentic", "docker-engines.json"), "w"))
+            check("the config file wins over detection, bad entries are dropped",
+                  [(e["name"], e["context"]) for e in repo_engines(pe)] == [("other", "ctx-x")])
+            os.environ["ASD_DISK_DOCKER_ENGINES"] = "colima:podcast-engine,lima:nightwatch:my-ctx,bogus:x"
+            check("the env override wins over the config", [(e["name"], e["context"]) for e in repo_engines(pe)] ==
+                  [("podcast-engine", "colima-podcast-engine"), ("nightwatch", "my-ctx")])
+            os.environ["ASD_DISK_DOCKER_ENGINES"] = "none"
+            check("the env value none turns it off", repo_engines(pe) == [] and engines_status([pe]) == [])
+            os.environ["ASD_DISK_DOCKER_ENGINES"] = "colima:podcast-engine"
+            put(2)   # 2 of 30 GiB free: below 15 % and below 4 GiB
+            e = engines_status([pe])[0]
+            check("measures the VM disk: free GiB and fraction", e["reachable"] and e["freeGiB"] == 2.0 and e["totalGiB"] == 30.0 and e["low"])
+            put(8)   # 27 %, 8 GiB
+            check("above both floors is not low", not engines_status([pe])[0]["low"])
+            put(4.2)  # 14 %: below the percent floor only
+            check("below the percent floor alone is low", engines_status([pe])[0]["low"])
+            put(4.6)  # 15.3 %, 4.6 GiB: above both
+            check("just above the floor is not low", not engines_status([pe])[0]["low"])
+            os.environ["ASD_DISK_VM_FLOOR_GIB"] = "6"
+            check("the GiB floor is env-tunable", engines_status([pe])[0]["low"])
+            os.environ.pop("ASD_DISK_VM_FLOOR_GIB")
+            open(log, "w").close()
+            put(2, image_gain_gib=10)
+            msgs: list[str] = []
+            reclaim_engine(engines_status([pe])[0], msgs.append)
+            dc = [c for c in calls() if c.startswith("docker")]
+            check("reclaim prunes dangling images only, in the engine's context, young layers kept",
+                  dc == ["docker --context colima-podcast-engine image prune -f --filter until=1h"])
+            check("reclaim stops once the disk is above the floor", not any("builder" in c for c in dc))
+            check("reclaim logs what was freed", any("Total reclaimed space: 5GB" in m for m in msgs) and any("+10.0 GiB" in m for m in msgs))
+            open(log, "w").close()
+            put(2, image_gain_gib=1, cache_gain_gib=10)
+            reclaim_engine(engines_status([pe])[0], lambda _m: None)
+            dc = [c for c in calls() if c.startswith("docker")]
+            check("still low after the images: the build cache goes next, in that order",
+                  [c.split()[3] for c in dc] == ["image", "builder"] and "builder prune -f --filter until=1h" in dc[1])
+            check("never -a, a volume, a container or a system prune",
+                  not any(w in c for c in calls() for w in (" -a", "--all", "volume", "container", "system", "rmi", " rm ")))
+            check("never starts, stops, deletes or resizes a VM",
+                  not any(re.search(r"\b(start|stop|delete|resize)\b", c) for c in calls() if c.startswith(("colima", "limactl"))))
+            put(2, image_gain_gib=0, cache_gain_gib=0)
+            check("still low after both prunes is reported low", engines_status([pe])[0]["low"])
+            open(os.path.join(state, "down"), "w").close()
+            open(log, "w").close()
+            e = engines_status([pe])[0]
+            reclaim_engine(e, lambda _m: None)
+            check("a VM that does not answer is not low and is left alone",
+                  not e["reachable"] and not e["low"] and not any(c.startswith("docker") for c in calls()))
+            os.remove(os.path.join(state, "down"))
+            os.environ["ASD_DISK_DOCKER_ENGINES"] = "lima:nightwatch"
+            put(1)
+            check("a lima engine is read through limactl shell", engines_status([nw])[0]["low"] and any(c.startswith("limactl shell nightwatch") for c in calls()))
+            os.environ["ASD_DISK_VM_GUARD"] = "0"
+            check("ASD_DISK_VM_GUARD=0 turns the guard off", engines_status([nw]) == [])
+            os.environ.pop("ASD_DISK_VM_GUARD")
+            os.environ["ASD_DISK_DOCKER_ENGINES"] = "colima:podcast-engine"
+            os.environ["ASD_DISK_RECLAIM_GIB"] = "0"
+            put(2, image_gain_gib=10)
+            open(log, "w").close()
+            active = os.path.join(t, "active.json")
+            json.dump({"repos": {"pe": pe}}, open(active, "w"))
+            os.environ["ASD_ACTIVE_REPOS_FILE"] = active
+            st = status()
+            check("status lists the active repos' engines", [x["name"] for x in st["engines"]] == ["podcast-engine"] and st["engines"][0]["low"])
+            reclaim(log=lambda _m: None)
+            check("reclaim also prunes a low engine", any("image prune" in c for c in calls()))
+    finally:
+        for k, v in keep.items():
+            if v is None: os.environ.pop(k, None)
+            else: os.environ[k] = v
+        os.environ.pop("ASD_DISK_RECLAIM_GIB", None)
+    return fails
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=(__doc__ or "").split("\n")[0])
-    ap.add_argument("cmd", nargs="?", choices=["status", "reclaim", "sweep"], default="status")
+    ap.add_argument("cmd", nargs="?", choices=["status", "reclaim", "sweep", "engines"], default="status")
+    ap.add_argument("--root", help="engines: only this repository's engines")
     ap.add_argument("--json", action="store_true")
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--selftest", action="store_true")
@@ -340,6 +648,9 @@ def main() -> int:
         return selftest()
     if a.cmd == "sweep":
         return sweep()
+    if a.cmd == "engines":
+        print(json.dumps(engines_status([os.path.realpath(a.root)] if a.root else None)))
+        return 0
     if a.cmd == "reclaim":
         return reclaim(a.dry_run)
     st = status()
@@ -347,6 +658,9 @@ def main() -> int:
         print(json.dumps(st))
         return 0
     print(f"{st['freeGiB']} GiB free (floor {st['floorGiB']:.0f}, reclaim target {st['targetGiB']:.0f}){' — LOW' if st['low'] else ''}")
+    for e in st["engines"]:
+        print(f"  engine {e['name']} ({e['kind']}, context {e['context']}): " + (
+            f"{e['freeGiB']} GiB of {e['totalGiB']} free ({e['freeFrac'] * 100:.0f}%){' — LOW' if e['low'] else ''}" if e["reachable"] else "not reachable"))
     for r in st["reclaimable"]:
         print(f"  may go  {r['dir']}  ({r['why']}, idle {r['idleMin']} min)")
     for r in st["kept"]:

@@ -1487,6 +1487,30 @@ def disk_free_gib(path: str) -> float | None:
         return None
 
 
+_VM_CACHE: dict[str, tuple[float, list[dict]]] = {}
+
+
+def vm_engines_low(root: str) -> list[dict]:
+    """The Docker engines (a Colima profile or Lima instance) this repository uses that are below the VM floor, read by
+    `disk_guard.py engines --root` and cached ~60 s (ASD_DISK_VM_TTL); [] when none, when the guard is off
+    (ASD_DISK_VM_GUARD=0) or when the VM does not answer. A stage that needs the engine queues like one below the Mac floor."""
+    script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "disk_guard.py")
+    if os.environ.get("ASD_DISK_VM_GUARD") == "0" or not os.path.exists(script):
+        return []
+    at, val = _VM_CACHE.get(root, (0.0, []))
+    if time.time() - at < float(os.environ.get("ASD_DISK_VM_TTL") or 60):
+        return val
+    low: list[dict] = []
+    try:
+        p = subprocess.run([sys.executable, script, "engines", "--root", root], capture_output=True, text=True, timeout=120,
+                           stdin=subprocess.DEVNULL)
+        low = [e for e in json.loads(p.stdout or "[]") if isinstance(e, dict) and e.get("low")]
+    except (OSError, subprocess.SubprocessError, ValueError):
+        pass
+    _VM_CACHE[root] = (time.time(), low)
+    return low
+
+
 def start_reclaim() -> None:
     """Start disk_guard.py reclaim in the background (it holds a lock, so a second one exits at once)."""
     script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "disk_guard.py")
@@ -1972,7 +1996,8 @@ class Runner:
         low_said, reclaimed = False, 0.0
         while not self.stopping:
             free, floor = disk_free_gib(self.root), disk_floor()
-            low = free is not None and free < floor
+            vm_low = vm_engines_low(self.root)
+            low = (free is not None and free < floor) or bool(vm_low)
             if low:
                 if time.time() - reclaimed > 300:
                     start_reclaim(); reclaimed = time.time()
@@ -1981,8 +2006,14 @@ class Runner:
                         since = now()
                         mine = queue_order({"queued_since": since, "queued_first": first})
                         self.save(state="queued", queued_since=since, queued_first=first or None)
-                    self.event(f"queued: the disk has {free:.0f} GiB free, below the {floor:.0f} GiB floor (ASD_DISK_FLOOR_GIB); "
-                               "reclaiming unused build output, and this run starts once the disk has room", "queued")
+                    if vm_low:
+                        e = vm_low[0]
+                        self.event(f"queued: Docker engine {e['name']} ({e['kind']}) has {e['freeGiB']:.1f} GiB of {e['totalGiB']:.0f} GiB free, "
+                                   f"below the VM floor ({e['floorPct']:.0f}% or {e['floorGiB']:.0f} GiB); pruning dangling images and build cache, "
+                                   "and this run starts once the engine has room", "queued")
+                    else:
+                        self.event(f"queued: the disk has {free:.0f} GiB free, below the {floor:.0f} GiB floor (ASD_DISK_FLOOR_GIB); "
+                                   "reclaiming unused build output, and this run starts once the disk has room", "queued")
                     low_said = True
                 self.keepalive_tick()
                 time.sleep(float(os.environ.get("ASD_RUNNER_SLOT_POLL") or 10))
@@ -5016,6 +5047,25 @@ def selftest() -> int:
         check("slots: a run the merge queue started (resolve-merge, after-merge) queues first, an ordinary run does not",
               queued_first == {"resolve-merge": [True], "after-merge": [True], "work-on": [None]})
         os.environ.pop("ASD_DISK_FLOOR_GIB")
+        # a Docker engine below the VM floor queues the run, with stub colima/docker binaries in a temp dir (never the real ones)
+        vmbin = os.path.join(tmp, "vmbin"); os.makedirs(vmbin, exist_ok=True)
+        open(os.path.join(vmbin, "colima"), "w").write('#!/bin/sh\necho "Filesystem 1024-blocks Used Available Capacity Mounted"\n'
+                                                       'echo "/dev/vda 31457280 0 2097152 93% /var/lib/docker"\n')
+        os.chmod(os.path.join(vmbin, "colima"), 0o755)
+        saved_vm = {k: os.environ.get(k) for k in ("PATH", "ASD_DISK_DOCKER_ENGINES", "ASD_DISK_NO_RECLAIM", "ASD_DISK_VM_TTL")}
+        os.environ.update(PATH=vmbin + os.pathsep + os.environ["PATH"], ASD_DISK_DOCKER_ENGINES="colima:podcast-engine",
+                          ASD_DISK_NO_RECLAIM="1", ASD_DISK_VM_TTL="0")
+        class _V(_R):
+            command = ""
+            def keepalive_tick(self): self.stopping = True
+        rv = _V()
+        Runner.take_slot(rv)  # pyright: ignore[reportArgumentType]
+        check("slots: a Docker engine below the VM floor queues the run and names the engine",
+              any(c[0] == "event" and c[1].startswith("queued: Docker engine podcast-engine") for c in rv.calls)
+              and any(c[0] == "save" and c[1].get("state") == "queued" for c in rv.calls))
+        for k, v in saved_vm.items():
+            if v is None: os.environ.pop(k, None)
+            else: os.environ[k] = v
         scenario([{"turns": [[{"final": "RUNNER: DONE"}]]}])
         fp = subprocess.Popen([sys.executable, copy, "--root", root, "--dossier", "W-98", "--foreground"], env=env,
                               stdout=open(os.path.join(tmp, "out.W-98.txt"), "w"), stderr=subprocess.STDOUT)
