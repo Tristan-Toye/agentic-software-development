@@ -52,7 +52,7 @@ function autoStateOf(repo: string, s: any): AutoState | null {
   }
 }
 
-type RunLike = { repo: string; root: string; main?: string; id: string; status: string; blockedBy: string[]; runner: { state: string; command?: string; pid: number; started: string } | null; deferred: { items: { id: string; state: string }[] } }
+type RunLike = { repo: string; root: string; main?: string; id: string; status: string; blockedBy: string[]; runner: { state: string; command?: string; pid: number; started: string } | null; deferred: { items: { id: string; state: string }[] }; followUps?: { parent: string; key: string; kind: string; summary: string; seed: string; planKey: string; src?: string; item?: string; dossier: string; legacy: boolean; updated: string }[] }
 type StubLike = { branch: string; state: string; canIntegrate?: boolean }
 
 /** The facts `auto_work.py --tick` reads: per repository its root, its dossiers (status, blockers, runner, deferred items) and its open stubs. */
@@ -61,12 +61,14 @@ export function buildFacts(runs: RunLike[], stubs: { repo: string; main: string;
   for (const r of runs) {
     const root = r.main || r.root   // the repository's main checkout, as Start and Fix all deferred use
     if (!on(r.repo) || !root) continue
-    const f = (repos[r.repo] ??= { root, runs: [], stubs: [], mergedStubs: [] })
+    const f = (repos[r.repo] ??= { root, runs: [], stubs: [], mergedStubs: [], followUps: [] as any[] })
     f.runs.push({
       id: r.id, status: r.status, blockedBy: r.blockedBy,
       runner: r.runner ? { state: r.runner.state, command: r.runner.command ?? "", pid: r.runner.pid, started: r.runner.started } : null,
       deferred: (r.deferred?.items ?? []).map((i) => ({ id: i.id, state: i.state })),
     })
+    // The owner-ruled follow-up dossiers with no dossier (markers, deferred items routed to a dossier, legacy forms): the script starts their /plan.
+    for (const u of r.followUps ?? []) f.followUps.push({ parent: u.parent, key: u.key, kind: u.kind, summary: u.summary, seed: u.seed, planKey: u.planKey, src: u.src ?? "", item: u.item ?? "", dossier: u.dossier, legacy: u.legacy, updated: u.updated })
   }
   for (const s of stubs) {
     const f = repos[s.repo]

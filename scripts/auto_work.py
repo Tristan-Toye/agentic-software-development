@@ -66,6 +66,21 @@ from its front matter; absent = stub, also with the stub switch off: /plan label
 in the auto work cycle are left to it, and the cycle's frontier snapshot skips `delivery: kanban` dossiers. Finished
 kanban dossiers with an open PR into development join the merge queue (eager merge) while development's CI is green.
 
+# Follow-up dossiers (gated by the auto work switch; the owner's ruling is the go-ahead, no click)
+
+An owner ruling or brief that asks for a new dossier is logged by the session as `FOLLOW-UP-DOSSIER: <key> — <summary>; seed: <description>`
+(an owner-ruled deferred item keeps `DEFERRED-TRIAGE: D-n → dossier`). Every tick, for a repository whose auto work switch is
+on (`enabled`; the same `auto_work` key `--enable` sets, nothing else), `followup_step` starts a `/plan` for each such item the
+dashboard's facts list in `followUps` that has no dossier yet: a marker as the free-form plan `<repo>.seed-<slug>` (the slug
+from the key, so the run key is deterministic and the item never starts twice), a deferred item as `<repo>.<ID>.plan-D-n`
+(the key `/fix-deferred` Step 7 and Plan it use). Starts go through the normal runner (slot cap, queue, account). Skipped: an item
+whose plan run is live or queued, one whose run finished (the dossier or the link is then missing: the dashboard alarms), one
+whose parent dossier was last updated before `ASD_FOLLOWUP_SINCE` (default 2026-11-27, the owner rule: older ones only alarm),
+a legacy free-text form (read-only), and a failed or stopped run until `ASD_FOLLOWUP_RETRY_AFTER` seconds (default 900) have
+passed. At most `FOLLOWUP_PER_TICK` (2) starts per tick and repository; a run is started at most `FOLLOWUP_TRIES` (3) times,
+that is two retries, then `<repo>.follow-ups.json` records an alarm the dashboard shows. `/plan` closes an item with
+`FOLLOW-UP-PLANNED: <key> → <ID>` (or `FOLLOW-UP-COVERED: <key> → <ID>`) in the parent dossier.
+
 # The rules it never bends
 
 Every owner question and every diagram review still waits for the owner: a live run in `waiting` is waited for, never
@@ -137,6 +152,7 @@ import re
 import subprocess
 import sys
 import tempfile
+import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import merge_dossier  # noqa: E402
@@ -147,6 +163,8 @@ import planning_runs  # noqa: E402
 HERE = os.path.dirname(os.path.abspath(__file__))
 LIVE = ("running", "testing", "waiting", "queued", "paused", "parked")   # parked: a /work-on waiting for its blockers; run_dossier unparks it
 STAGE_OF = {"planned": "plan", "ready": "build", "building": "build", "review": "build", "pr": "fix", "done": "fix"}
+FOLLOWUP_PER_TICK = 2   # follow-up dossier /plan runs started per tick and repository
+FOLLOWUP_TRIES = 3      # starts of one follow-up's plan run: the first and two retries, then an alarm
 FIX_FOLLOWUPS = 2   # follow-up /fix-deferred rounds per member for items a fix run added itself
 LAG_TICKS = 2   # ticks a finished run's effect may take to show in the dashboard's facts before the cycle pauses
 
@@ -266,6 +284,90 @@ def kanban_pull(repo: str, root: str, facts: dict) -> list[str]:
     if out:
         write_atomic(path, state)
     return out
+
+
+# ---------------------------------------------------------------- follow-up dossiers (owner-ruled, no dossier yet)
+def followup_since() -> str:
+    return os.environ.get("ASD_FOLLOWUP_SINCE") or "2026-11-27"
+
+
+def followup_retry_after() -> float:
+    try:
+        return float(os.environ.get("ASD_FOLLOWUP_RETRY_AFTER", "900"))
+    except ValueError:
+        return 900.0
+
+
+def followup_state_path(repo: str) -> str:
+    return os.path.join(runs_dir(), f"{repo}.follow-ups.json")
+
+
+def followup_brief(f: dict) -> str:
+    """The description a follow-up /plan run is given: the owner's seed, then what to do with the key."""
+    return (f"{f.get('seed') or f.get('summary') or ''}\n\nFollow-up of {f.get('parent')} ({f.get('key')}): {f.get('summary') or ''}\n"
+            f"The owner ruled this its own dossier. First look for a dossier that already covers it (dossiers on development, open plan "
+            f"branches): when one does, log `FOLLOW-UP-COVERED: {f.get('key')} → <ID>` in the build log of {f.get('parent')} and stop. "
+            f"Otherwise plan it; once the new dossier has its ID, log `FOLLOW-UP-SOURCE: {f.get('parent')} {f.get('key')}` in the new "
+            f"dossier's own build log and `FOLLOW-UP-PLANNED: {f.get('key')} → <new ID>` in the build log of {f.get('parent')}.\n")
+
+
+def followup_step(repo: str, root: str, facts: dict) -> list[str]:
+    """Start /plan for every owner-ruled follow-up with no dossier and no plan run that is live, queued, finished or waiting to
+    be retried; at most FOLLOWUP_PER_TICK per call, a run at most FOLLOWUP_TRIES times, then an alarm in the state file.
+    The caller checks the switch. Returns the plan keys started."""
+    path = followup_state_path(repo)
+    state = read_json(path, {}) or {}
+    recs = state.setdefault("items", {})
+    out: list[str] = []
+    seen: set[str] = set()
+    changed = False
+    for f in facts.get("followUps") or []:
+        pk = str(f.get("planKey") or "")
+        if not pk or pk in seen or f.get("kind") not in ("marker", "deferred") or f.get("dossier") or f.get("legacy"):
+            continue
+        seen.add(pk)
+        if str(f.get("updated") or "")[:10] < followup_since():
+            continue   # older than the owner rule: shown by the dashboard, never started here
+        rs = read_json(os.path.join(runs_dir(), f"{repo}.{pk}.runner.json"), None)
+        rstate = str((rs or {}).get("state") or "")
+        if rstate in LIVE or rstate == "done":
+            continue   # live or queued: it is on it; done and still unlinked: a second run would duplicate the dossier, the dashboard alarms
+        rec = recs.get(pk) or {}
+        tries = int(rec.get("tries", 1 if rs else 0))
+        if tries >= FOLLOWUP_TRIES:
+            if not rec.get("alarm"):
+                recs[pk] = {**rec, "tries": tries, "alarm": f"the plan run failed {tries} times: {rec.get('note') or rstate or 'not started'}", "ts": now()}
+                changed = True
+                print(f"auto_work: {repo}: follow-up {f.get('parent')} {f.get('key')}: ALARM, {recs[pk]['alarm']}")
+            continue
+        lastts = rec.get("last") or str((rs or {}).get("ts") or (rs or {}).get("started") or "")
+        if lastts and secs_since(lastts) < followup_retry_after():
+            continue   # started or failed recently: the runner has not shown its state yet, or the retry waits
+        if len(out) >= FOLLOWUP_PER_TICK:
+            break
+        if f.get("kind") == "deferred":
+            ok, msg = start_runner(root, str(f.get("src") or f.get("parent")), "plan", str(f.get("item") or ""))
+        else:
+            seed = os.path.join(runs_dir(), f"{repo}.{pk}.followup.md")
+            os.makedirs(runs_dir(), exist_ok=True)
+            with open(seed, "w", encoding="utf-8") as fh:
+                fh.write(followup_brief(f))
+            ok, msg = run_runner([sys.executable, runner_bin(), pk, "--root", root, "--command", "plan", "--seed", seed])
+        recs[pk] = {"tries": tries + 1, "last": now(), "note": "" if ok else msg[:160], "parent": f.get("parent"), "key": f.get("key"), "ts": now()}
+        changed = True
+        print(f"auto_work: {repo}: follow-up {f.get('parent')} {f.get('key')}: " + (f"plan started ({pk})" if ok else "not started: " + msg))
+        out.append(pk)
+    if changed:
+        write_atomic(path, state)
+    return out
+
+
+def secs_since(iso: str) -> float:
+    """Seconds since an ISO timestamp; a missing or unreadable one reads as long ago (the retry is allowed)."""
+    try:
+        return max(0.0, time.time() - datetime.datetime.fromisoformat(str(iso).replace("Z", "+00:00")).timestamp())
+    except ValueError:
+        return 1e9
 
 
 def secs(iso: str) -> float:
@@ -1133,6 +1235,13 @@ def tick_repo(repo: str, facts: dict) -> None:
                 eager_step(repo, root, facts)
             finally:
                 lk.close()
+    if enabled(repo):   # the follow-up dossiers: the auto work switch alone gates them
+        lk = lock_try(repo)
+        if lk is not None:
+            try:
+                followup_step(repo, root, facts)
+            finally:
+                lk.close()
     if not enabled(repo):
         return
     lk = lock_try(repo)
@@ -1910,6 +2019,7 @@ def selftest() -> int:
     kanban_selftest(check)
     jira_branch_selftest(check)
     held_fix_selftest(check)
+    followup_selftest(check)
     land_dirs_ok = [land_stub.settings_path(), runs_dir()] != real_dirs
     check("the selftest used its own settings and runs directory", land_dirs_ok)
     print("FAILED: " + ", ".join(fails) if fails else "all ok")
@@ -2118,6 +2228,67 @@ def kanban_selftest(check) -> None:
             for k, v in saved.items():
                 if v is None: os.environ.pop(k, None)
                 else: os.environ[k] = v
+
+
+def followup_selftest(check) -> None:
+    """The follow-up dossier launch: unlinked items only, no double start, the retry cap, the switch, legacy forms left alone."""
+    keys = ("ASD_RUNS_DIR", "ASD_STUB_AUTOMERGE_FILE", "ASD_RUNNER_BIN", "ASD_MERGE_BIN", "ASD_DELIVERY_FLOWS", "ASD_FOLLOWUP_RETRY_AFTER", "ASD_FOLLOWUP_SINCE")
+    saved = {k: os.environ.get(k) for k in keys}
+    with tempfile.TemporaryDirectory() as tmp:
+        runs, root, log_ = os.path.join(tmp, "runs"), os.path.join(tmp, "fu-repo"), os.path.join(tmp, "calls.txt")
+        os.makedirs(runs); os.makedirs(root)
+        repo = repo_name(root)
+        open(os.path.join(tmp, "runner.py"), "w").write("import sys\nopen(%r,'a').write('runner '+' '.join(sys.argv[1:])+'\\n')\nprint('started')\n" % log_)
+        open(os.path.join(tmp, "merge.py"), "w").write("print('')\n")
+        os.environ.update(ASD_RUNS_DIR=runs, ASD_STUB_AUTOMERGE_FILE=os.path.join(tmp, "settings.json"), ASD_RUNNER_BIN=os.path.join(tmp, "runner.py"),
+                          ASD_MERGE_BIN=os.path.join(tmp, "merge.py"), ASD_DELIVERY_FLOWS=os.path.join(tmp, "flows.json"), ASD_FOLLOWUP_RETRY_AFTER="100000", ASD_FOLLOWUP_SINCE="2026-11-27")
+        try:
+            calls = lambda: [l for l in (open(log_).read().splitlines() if os.path.exists(log_) else []) if l.startswith("runner")]
+            fu = lambda key, kind="marker", **kw: {"parent": "W-9", "key": key, "kind": kind, "summary": "sum " + key, "seed": "seed " + key, "planKey": "seed-fu-" + key.lower().replace(" ", "-"),
+                                                   "dossier": "", "legacy": False, "updated": "2026-11-28", **kw}
+            facts = {"root": root, "runs": [], "stubs": [], "followUps": [
+                fu("W-9 F-1"), fu("W-9 F-2", dossier="W-12"), fu("W-9 F-3", legacy=True), fu("W-9 F-4", updated="2026-11-10"),
+                fu("W-9 D-5", "deferred", planKey="W-9.plan-D-5", src="W-9", item="D-5"), fu("W-9 F-6"), fu("W-9 F-7"), fu("W-9 F-1")]}
+            set_eager(repo, False)
+            tick_repo(repo, facts)
+            check("follow-ups: switch off (no auto_work key): nothing is started, no state file", calls() == [] and not os.path.exists(followup_state_path(repo)), calls())
+            set_switch(repo, True); set_eager(repo, False)
+            tick_repo(repo, facts)
+            got = calls()
+            check("follow-ups: only unlinked, non-legacy, current items start; at most FOLLOWUP_PER_TICK per tick, in order, a marker as a seed run and a deferred item as plan-D-n",
+                  len(got) == 2 and got[0].startswith(f"runner seed-fu-w-9-f-1 --root {root} --command plan --seed ") and got[1] == f"runner W-9 --root {root} --command plan --items D-5", got)
+            check("follow-ups: the brief names the key and the back-link lines",
+                  all(x in open(os.path.join(runs, f"{repo}.seed-fu-w-9-f-1.followup.md")).read() for x in ("seed W-9 F-1", "FOLLOW-UP-PLANNED: W-9 F-1 →", "FOLLOW-UP-COVERED: W-9 F-1 →", "FOLLOW-UP-SOURCE: W-9 W-9 F-1")))
+            n = len(calls()); tick_repo(repo, facts)
+            check("follow-ups: a second tick starts the next item and never the same one twice (deterministic run key, start recorded)",
+                  [c.split()[1] for c in calls()[n:]] == ["seed-fu-w-9-f-6", "seed-fu-w-9-f-7"] and len(set(calls())) == len(calls()), calls())
+            n = len(calls()); tick_repo(repo, facts)
+            check("follow-ups: with every item started (no runner state yet), nothing starts again", len(calls()) == n, calls()[n:])
+            for pk, st_ in (("seed-fu-w-9-f-1", "running"), ("seed-fu-w-9-f-6", "queued"), ("seed-fu-w-9-f-7", "done"), ("W-9.plan-D-5", "failed")):
+                json.dump({"command": "plan", "state": st_, "pid": 1, "started": "2026-11-28T00:00:00Z"}, open(os.path.join(runs, f"{repo}.{pk}.runner.json"), "w"))
+            os.environ["ASD_FOLLOWUP_RETRY_AFTER"] = "0"
+            n = len(calls()); tick_repo(repo, facts)
+            check("follow-ups: a live, queued or finished plan run blocks the start; a failed one is retried (once here)", [c.split()[1] for c in calls()[n:]] == ["W-9"], calls()[n:])
+            n = len(calls()); tick_repo(repo, facts)
+            check("follow-ups: the second retry", [c.split()[1] for c in calls()[n:]] == ["W-9"], calls()[n:])
+            n = len(calls()); tick_repo(repo, facts)
+            rec = (read_json(followup_state_path(repo), {}) or {})["items"]["W-9.plan-D-5"]
+            check("follow-ups: the retry cap holds (first start + two retries), then an alarm is recorded and nothing more starts",
+                  len(calls()) == n and rec["tries"] == 3 and "failed 3 times" in rec.get("alarm", ""), (calls()[n:], rec))
+            facts["followUps"][4]["dossier"] = "W-30"   # the back-link closed it
+            facts["followUps"] = [x for x in facts["followUps"] if x["key"] != "W-9 D-5"] + [fu("W-9 G-1")]
+            n = len(calls()); tick_repo(repo, facts)
+            check("follow-ups: a closed item is not started; a new item is", [c.split()[1] for c in calls()[n:]] == ["seed-fu-w-9-g-1"], calls()[n:])
+            set_switch(repo, False); set_eager(repo, False)
+            facts["followUps"].append(fu("W-9 H-1"))
+            n = len(calls()); tick_repo(repo, facts)
+            check("follow-ups: switched off again, nothing starts", len(calls()) == n, calls()[n:])
+        finally:
+            for k, v in saved.items():
+                if v is None:
+                    os.environ.pop(k, None)
+                else:
+                    os.environ[k] = v
 
 
 def main(argv: list[str] | None = None) -> int:

@@ -467,6 +467,8 @@ report and needs none.
 - **Everything surprising goes in the record file.** Chat output dies with
   the session; the record and the pull request do not.
 
+**Follow-ups that need their own dossier.** Log them as one structured line, never free text: `FOLLOW-UP-DOSSIER: <key> — <one-line summary>; seed: <the description>` (key like `W-215 F-2`, `W-213 Q4`). An owner ruling "own dossier" on a question is logged with this line right after the `OWNER-RULING` line (a D-item keeps `DEFERRED-TRIAGE: D-n → dossier`). The runner plans it by itself; the /plan session logs `FOLLOW-UP-PLANNED: <key> → <new ID>` back in the parent (references/runner.md, Follow-up dossiers).
+
 ---
 
 **Spawning under Claude Code.** Paste every payload; never spawn by pointing

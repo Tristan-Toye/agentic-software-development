@@ -36,6 +36,10 @@ export type Run = {
   /** Delivery lane from the dossier front matter (`kanban`); empty for the stub flow. */
   delivery?: string
   deferred: Deferred; deferredOpen: number; runnerLog: string
+  /** Owner-ruled follow-up dossiers of this dossier that have no dossier yet (marker, deferred item or legacy free text), each with where its /plan stands. */
+  followUps?: FollowUpView[]
+  /** The follow-up lines of the build log as scanned (links applied); `followUps` is built from them, fresh on every request. */
+  followUpRaw?: FollowUp[]
   /** The key of the run shown for this dossier: `<repo>.<ID>`, or the /plan run of the deferred item it comes from. */
   runKey?: string
   /** Actions pressed whose run has not shown up yet (their buttons are hidden), and the note of one that failed or timed out. */
@@ -89,6 +93,104 @@ export function readDeferredRecord(dossierFile: string, id: string, main = ""): 
   })
 }
 
+/**
+ * Follow-up dossiers: an owner ruling or brief that asks for a new dossier. The one structured marker, logged by the session that
+ * records the ruling: `FOLLOW-UP-DOSSIER: <key> — <one-line summary>; seed: <the description>` (key like `W-215 F-2` or `W-213 Q4`).
+ * Closed by the parent's `FOLLOW-UP-PLANNED: <key> → <ID>` or `FOLLOW-UP-COVERED: <key> → <ID>`, or by the new dossier's own
+ * `FOLLOW-UP-SOURCE: <parent> <key>`. An owner-ruled deferred item (`DEFERRED-TRIAGE: D-n → dossier`) is the same thing in its own form.
+ * The older free-text forms (`FOLLOW-UP-DOSSIER-1`, `FOLLOW-UP-IDEA`, `FOLLOW-UP-DOSSIER:` without a seed, `DEFERRED-SCOPE`, an
+ * `OWNER-RULING … own dossier` that is not a D-item) are read-only: they show as unplanned, never start a run.
+ */
+export type FollowUp = { key: string; summary: string; seed: string; kind: "marker" | "legacy"; dossier: string; how: "" | "planned" | "covered"; line: string }
+export type FollowUpState = "unplanned" | "queued" | "planning" | "failed" | "alarm" | "unlinked" | "legacy"
+export type FollowUpView = { parent: string; key: string; kind: "marker" | "deferred" | "legacy"; summary: string; seed: string; planKey: string; src?: string; item?: string
+  updated: string; legacy: boolean; dossier: string; state: FollowUpState; tries: number; note: string; line: string }
+const ID_RE = "[A-Z][A-Z0-9]*-\\d+"
+export const followUpNorm = (k: string): string => k.replace(/\s+/g, " ").trim().toUpperCase()
+/** The deterministic seed slug of a key (`seed-fu-w-215-f-2`): the run key of its /plan is `<repo>.<slug>`. */
+export function followUpSlug(parent: string, key: string): string {
+  const k = followUpNorm(key).startsWith(parent.toUpperCase()) ? key : `${parent} ${key}`
+  const body = k.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "")
+  return ("seed-fu-" + body).slice(0, 64).replace(/-+$/, "")
+}
+const LEGACY_RULING = /\b(?:own|separate|second|another|new|later) dossier\b|\btwo dossiers\b/i
+export function parseFollowUps(log: string, legacy = true): FollowUp[] {
+  const out: FollowUp[] = []
+  const lines = log.split("\n").map((l) => l.trim().replace(/^(?:[-*]\s+)?(?:20\d\d-\d\d-\d\d\s+)?/, ""))
+  const marker = new RegExp(`^FOLLOW-UP-DOSSIER:\\s*(${ID_RE}(?:\\s+[A-Za-z0-9._-]+)?)\\s+—\\s+(.+?);\\s*seed:\\s*(.+)$`)
+  const close = new RegExp(`^FOLLOW-UP-(PLANNED|COVERED):\\s*(.+?)\\s*→\\s*(${ID_RE})`)
+  const closed = new Map<string, { id: string; how: "planned" | "covered" }>()
+  const at = (re: RegExp, from: number, n: number) => lines.slice(from, from + n).some((x) => re.test(x))
+  let ord = 0, scope = 0, idea_ = 0, ruled = 0
+  lines.forEach((l, i) => {
+    const c = l.match(close)
+    if (c) { closed.set(followUpNorm(c[2]), { id: c[3], how: c[1] === "PLANNED" ? "planned" : "covered" }); return }
+    const m = l.match(marker)
+    if (m) { out.push({ key: m[1].replace(/\s+/g, " ").trim(), summary: m[2].trim(), seed: m[3].trim(), kind: "marker", dossier: "", how: "", line: l.slice(0, 200) }); return }
+    if (!legacy) return
+    if (/^FOLLOW-UP-DOSSIER:/.test(l)) { out.push({ key: `L-${++ord}`, summary: l.replace(/^FOLLOW-UP-DOSSIER:\s*/, "").slice(0, 160), seed: "", kind: "legacy", dossier: "", how: "", line: l.slice(0, 200) }); return }
+    const n = l.match(/^FOLLOW-UP-DOSSIER-(\d+)\b\s*[:—-]*\s*(.*)$/)
+    if (n) { out.push({ key: `F-${n[1]}`, summary: n[2].slice(0, 160), seed: "", kind: "legacy", dossier: "", how: "", line: l.slice(0, 200) }); return }
+    const idea = l.match(/^FOLLOW-UP-IDEA\b\s*[:—-]*\s*(.*)$/)
+    if (idea) { out.push({ key: `IDEA-${++idea_}`, summary: idea[1].slice(0, 160), seed: "", kind: "legacy", dossier: "", how: "", line: l.slice(0, 200) }); return }
+    const sc = l.match(/^DEFERRED-SCOPE\b[^:]*:\s*(.*)$/)
+    if (sc) { out.push({ key: `S-${++scope}`, summary: sc[1].slice(0, 160), seed: "", kind: "legacy", dossier: "", how: "", line: l.slice(0, 200) }); return }
+    const r = l.match(/^OWNER-RULING\b[^:—]*[:—]\s*(.*)$/)
+    // A ruling on a question that is not a deferred item (a D-item has its own route) and asks for its own dossier; one a
+    // FOLLOW-UP line right after it already records is that line's item.
+    if (r && LEGACY_RULING.test(l) && !/\bD-\d+\b/.test(l) && !at(/^FOLLOW-UP-/, i + 1, 1)) {
+      const q = l.match(/\bQ(\d+)\b/)
+      out.push({ key: q ? `Q${q[1]}` : `R-${++ruled}`, summary: r[1].slice(0, 160), seed: "", kind: "legacy", dossier: "", how: "", line: l.slice(0, 200) })
+    }
+  })
+  return out.map((f) => {
+    const hit = closed.get(followUpNorm(f.key)) ?? closed.get(followUpNorm(f.key.replace(/^(?=[A-Z]-?\d|Q\d|S-|L-|IDEA|F-|R-)/, "")))
+    return hit ? { ...f, dossier: hit.id, how: hit.how } : f
+  })
+}
+/** The new dossier's own `FOLLOW-UP-SOURCE: <parent> <key>` lines, the link no other run's copy of the parent has to carry. */
+export function followUpSources(log: string): { src: string; item: string }[] {
+  return [...log.matchAll(new RegExp(`^(?:[-*]\\s+)?FOLLOW-UP-SOURCE:\\s*(${ID_RE})\\s+(.+?)\\s*$`, "gm"))].map((m) => ({ src: m[1], item: m[2] }))
+}
+/** A legacy key is the parent's own (no dossier id in it): the closing lines name it with the parent, `<parent> <key>`, or bare. */
+const keyOf = (parent: string, f: FollowUp): string => f.kind === "marker" ? f.key : `${parent} ${f.key}`
+/** Owner-ruled follow-ups of one dossier with no dossier yet, from its markers, its deferred items routed to a dossier and the legacy forms. */
+export function followUpItems(r: { id: string; updated: string; deferred?: Deferred; followUpRaw?: FollowUp[] }): Omit<FollowUpView, "state" | "tries" | "note">[] {
+  const out: Omit<FollowUpView, "state" | "tries" | "note">[] = []
+  for (const f of r.followUpRaw ?? []) {
+    if (f.dossier) continue
+    const key = keyOf(r.id, f)
+    out.push({ parent: r.id, key, kind: f.kind, summary: f.summary, seed: f.seed, planKey: f.kind === "marker" ? followUpSlug(r.id, key) : "", updated: r.updated, legacy: f.kind === "legacy", dossier: "", line: f.line })
+  }
+  for (const i of r.deferred?.items ?? []) {
+    if (i.state !== "dossier" || i.dossier || i.planBranch || /^covered\b/i.test(i.note)) continue
+    const from = i.seed && i.seed.src !== r.id ? i.seed : { src: r.id, item: i.id }
+    out.push({ parent: r.id, key: `${r.id} ${i.id}`, kind: "deferred", summary: i.title, seed: `/plan ${from.src} ${from.item}`, planKey: `${from.src}.plan-${from.item}`, src: from.src, item: from.item, updated: r.updated, legacy: false, dossier: "", line: `DEFERRED-TRIAGE: ${i.id} → dossier` })
+  }
+  return out
+}
+/**
+ * Where each follow-up's /plan stands: the runner state of its plan run (`<repo>.<planKey>`) and the start count the auto work
+ * tick keeps in `<repo>.follow-ups.json` (`items[planKey] = {tries, alarm, note}`). A follow-up whose run failed three times, or
+ * whose run finished without a back-link, is an alarm; a legacy one is shown as is.
+ */
+export function followUpViews(items: ReturnType<typeof followUpItems>, repo: string, runnerOf: (key: string) => { state: string } | null, tries: Record<string, { tries?: number; alarm?: string; note?: string }>, maxTries = 3): FollowUpView[] {
+  return items.map((f) => {
+    if (f.legacy || !f.planKey) return { ...f, state: "legacy" as const, tries: 0, note: "recorded as free text: plan it by hand, or log FOLLOW-UP-COVERED / the structured marker" }
+    const st = runnerOf(`${repo}.${f.planKey}`)?.state ?? "", t = tries[f.planKey] ?? {}
+    const n = Number(t.tries ?? (st ? 1 : 0))
+    const live = ["running", "testing", "waiting", "paused", "parked"].includes(st)
+    const state: FollowUpState = live ? "planning" : st === "queued" ? "queued" : st === "done" ? "unlinked" : t.alarm || n >= maxTries ? "alarm" : st ? "failed" : "unplanned"
+    const note = state === "alarm" ? (t.alarm || `the plan run failed ${n} times`) : state === "unlinked" ? "the plan run finished but logged no FOLLOW-UP-PLANNED / FOLLOW-UP-COVERED link" : state === "failed" ? `the plan run ${st}; retried ${n}/${maxTries}` : ""
+    return { ...f, state, tries: n, note }
+  })
+}
+/** The new dossiers' `FOLLOW-UP-SOURCE` links close the follow-ups whose parent copy did not carry the planned line. */
+export function linkFollowUps(runs: Run[], sources: Map<string, string>): void {
+  for (const r of runs) for (const f of r.followUpRaw ?? []) {
+    if (!f.dossier) { const id = sources.get(`${r.repo}/${r.id}/${followUpNorm(keyOf(r.id, f))}`); if (id) { f.dossier = id; f.how = "planned" } }
+  }
+}
 export function parseDeferred(log: string, record: DeferredItem[] | null = null): { items: DeferredItem[]; pr: string; branch: string } {
   // A record, when the run wrote one, is the source of the items; the log still supplies the later events and the PR.
   const items = new Map<string, DeferredItem>((record ?? []).map((i) => [i.id, i]))
@@ -820,11 +922,12 @@ export async function buildRuns(questions: Question[], now = Date.now()): Promis
       runnerLog: runner ? join(runsDir(), `${runKey}.runner.log`) : "",
       ...(() => {
         for (const x of deferredSources(log)) sources.set(`${repoName}/${x.src}/${x.item}`, f.id!)
+        for (const x of followUpSources(log)) sources.set(`${repoName}/${x.src}/${followUpNorm(x.item)}`, f.id!)
         const pd = deferredSince(f.updated ?? "", runner) ? parseDeferred(log, readDeferredRecord(d.file, f.id!, d.main)) : { items: [], pr: "", branch: "" }
         let report = ""
         try { report = readFileSync(join(runsDir(), `${repoName}.${f.id}.deferred.md`), "utf8") } catch { /* none */ }
         const deferred: Deferred = { items: withReport(pd.items, report), pr: pd.pr, report: report !== "", branch: pd.branch }
-        return { deferred, deferredOpen: pd.items.filter((i) => i.state === "open").length }
+        return { deferred, deferredOpen: pd.items.filter((i) => i.state === "open").length, followUpRaw: parseFollowUps(log, deferredSince(f.updated ?? "", runner)) }
       })(),
     })
   }
@@ -838,6 +941,7 @@ export async function buildRuns(questions: Question[], now = Date.now()): Promis
       if (!sources.has(k)) { sources.set(k, x.id); planOn.set(k, x.branch) }
     }
   }
+  linkFollowUps(runs, sources)
   linkPlannedItems(runs, sources, undefined, planOn)
   return { scannedAt: new Date(now).toISOString(), runs }
 }
@@ -881,6 +985,7 @@ export async function planBranchSources(main: string): Promise<{ src: string; it
       if (!id) continue
       const text = await sh(["git", "-C", main, "show", `${ref}:${f}`], undefined, 10000)
       for (const x of deferredSources(text)) out.push({ ...x, id, branch: ref.replace(/^origin\//, "") })
+      for (const x of followUpSources(text)) out.push({ src: x.src, item: followUpNorm(x.item), id, branch: ref.replace(/^origin\//, "") })
     }
   }
   planCache.set(main, { sig: refs, v: out })
@@ -998,6 +1103,14 @@ export async function getRuns(questions: () => Question[], opts: { fresh?: boole
     const qa = linked.get(`${r.repo}/${r.id}`)
     return { ...r, ...l, questions: qa?.open ?? [], answered: qa?.answered ?? [], view: viewFor(r.status, l.running, l.updates.length) }
   })
+  // The follow-ups with no dossier: each one's plan run state and the auto work tick's start counts, read fresh.
+  const fuTries = new Map<string, Record<string, { tries?: number; alarm?: string; note?: string }>>(await Promise.all([...new Set(live.map((r) => r.repo))].map(async (repo) => {
+    let t: any = {}; try { t = JSON.parse((await readText(join(runsDir(), `${repo}.follow-ups.json`))) ?? "{}")?.items ?? {} } catch { /* none */ }
+    return [repo, t] as const
+  })))
+  const fuItems = live.map((r) => followUpItems(r))
+  const fuStates = new Map<string, { state: string } | null>(await Promise.all([...new Set(live.flatMap((r, i) => fuItems[i].filter((f) => f.planKey).map((f) => `${r.repo}.${f.planKey}`)))].map(async (k) => [k, await readRunnerAsync(k)] as const)))
+  live.forEach((r, i) => { (r as Run).followUps = followUpViews(fuItems[i], r.repo, (k) => fuStates.get(k) ?? null, fuTries.get(r.repo) ?? {}) })
   const statusBy = new Map<string, string>()   // first run of a (repo, id), as `find` gave it; a map, since controlsFor asks per blocker of every run
   for (const x of live) { const k = `${x.repo}/${x.id}`; if (!statusBy.has(k)) statusBy.set(k, x.status) }
   const statusOf = (repo: string) => (id: string) => statusBy.get(`${repo}/${id}`)

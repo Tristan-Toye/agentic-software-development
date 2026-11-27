@@ -173,3 +173,5 @@ Read `${PLUGIN_ROOT}/references/plan/phase-8.md` at the start of this phase.
   Jira transition, no push, no PR (committed mode asks once, at Phase 8), no
   command that writes outside the repository.
 - ASD-STE100 binds every word you write in the dossier (`formats/writing.md` §5).
+
+**Follow-ups that need their own dossier.** Log them as one structured line, never free text: `FOLLOW-UP-DOSSIER: <key> — <one-line summary>; seed: <the description>` (key like `W-215 F-2`, `W-213 Q4`). An owner ruling "own dossier" on a question is logged with this line right after the `OWNER-RULING` line (a D-item keeps `DEFERRED-TRIAGE: D-n → dossier`). The runner plans it by itself; the /plan session logs `FOLLOW-UP-PLANNED: <key> → <new ID>` back in the parent (references/runner.md, Follow-up dossiers).
