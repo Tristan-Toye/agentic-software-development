@@ -18,15 +18,18 @@ rebuilds the fixture from it for a run in it. The dashboard leaves it out of its
 
 Ignored files (a `.runtime.env` written by `up.sh`, build output) stay between runs.
 
-The stack's UNTRACKED state exists only in the main checkout (a `.runtime.env` written by `up.sh`, the NATS
-operator-mode key set under `deploy/compose/nats/opmode/` where a repo keeps one there), so a fresh stack checkout
-would have no settings file and the repo's env script would refuse in it. `sync` therefore copies the paths the
-repo's stack-repair config lists as `stack_state_files` (a trailing `/` marks a directory) from the main checkout
-when the stack checkout lacks them or holds an older copy: files 0600, directories 0700, written through a temp
-file and renamed, symlinks skipped, contents never printed (the output names the paths only). It only ever COPIES
-the main checkout's existing set: nothing here generates a key, and a path the main checkout lacks is skipped and
-named. Each copied path is also added to the stack checkout's own `.git/info/exclude` when git does not already
-ignore it, so the dirty-tree refusal above never trips on state it put there itself.
+The stack checkout's settings file (config-harness `.runtime.env`) is NEVER copied from the main checkout. `sync` rebuilds
+it with the repo's own step, the config key `stack_env_regen` ({command, path, source}; the command runs for the stack
+checkout and writes `path`): when the file is missing in the stack checkout, or older than `source` (the encrypted
+bootstrap values), `regen_env` runs it, keeps the file 0600 and adds it to the clone's `.git/info/exclude` unless git
+ignores it. A failing step gives `STACK-ENV: stopped \u2014 settings file regen failed: <exit> <last output line, scrubbed>`
+(exit 2) and nothing is copied instead. The other untracked state a repo keeps (the NATS operator-mode key set under
+`deploy/compose/nats/opmode/`) is still COPIED, by `sync`, from the main checkout, as the repo's config lists it in
+`stack_state_files` (a trailing `/` marks a directory) when the stack checkout lacks it or holds an older copy: files 0600,
+directories 0700, written through a temp file and renamed, symlinks skipped, contents never printed (the output names the
+paths only). Nothing here generates a key, and a path the main checkout lacks is skipped and named. Each copied path is
+also added to the stack checkout's own `.git/info/exclude` when git does not already ignore it, so the dirty-tree refusal
+above never trips on state it put there itself.
 
 # Usage
 
@@ -41,6 +44,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -174,7 +178,76 @@ def sync_state(main: str, stack: str, rels: list[str]) -> tuple[list[str], list[
     return copied, lacking
 
 
-def sync(main: str, ref: str, fetch: bool = True, state_files: list[str] | None = None) -> tuple[int, str]:
+def regen_config(main: str, cfg: dict | None = None) -> dict | None:
+    """The repo's `stack_env_regen` entry ({"command": [...], "path": "<settings file>", "source": "<encrypted source>"}), else None."""
+    cfg = cfg if cfg is not None else (stack_repair.load_config(main) or {})
+    r = cfg.get("stack_env_regen")
+    if not (isinstance(r, dict) and isinstance(r.get("command"), list) and r["command"] and isinstance(r.get("path"), str)):
+        return None
+    for k in ("path", "source"):
+        v = r.get(k, "")
+        if v and (not isinstance(v, str) or os.path.isabs(v) or ".." in v.split("/")):
+            return None
+    return {"cfg": cfg, **r}
+
+
+def regen_needed(stack: str, rg: dict) -> bool:
+    """The settings file is missing in `stack`, or older than the encrypted source the repo keeps beside it."""
+    dst = os.path.join(stack, rg["path"])
+    if not os.path.isfile(dst):
+        return True
+    src = os.path.join(stack, rg.get("source") or "")
+    try:
+        return bool(rg.get("source")) and os.path.isfile(src) and os.stat(src).st_mtime > os.stat(dst).st_mtime
+    except OSError:
+        return False
+
+
+def _scrub(text: str) -> str:
+    """One stderr line with anything value-shaped removed: NAME=value pairs and long token-like runs."""
+    text = re.sub(r"([A-Za-z_][A-Za-z0-9_]*)=\S+", r"\1=<redacted>", text)
+    text = re.sub(r"[A-Za-z0-9_+/=.-]{24,}", "<redacted>", text)
+    return text.strip()[:160]
+
+
+def stop_line(reason: str) -> str:
+    return f"STACK-ENV: stopped \u2014 {reason}"
+
+
+def regen_env(main: str, stack: str, run=None, rg: dict | None = None) -> tuple[str, str]:
+    """Make the stack checkout's settings file by the repo's OWN step (config `stack_env_regen`), never by copying it from
+    the main checkout. (state, text): ("none", "") no regen configured, ("fresh", ...) present and not older than its source,
+    ("regenerated", ...), ("failed", "settings file regen failed: <exit> <last output line, scrubbed>"). The file is chmod
+    0600 and excluded in the clone's .git/info/exclude when git does not ignore it. Never prints or reads a value."""
+    rg = rg if rg is not None else regen_config(main)
+    if not rg:
+        return "none", ""
+    if not regen_needed(stack, rg):
+        return "fresh", f"STACK-ENV: {rg['path']} is fresh in {stack}, not regenerated"
+    run = run or stack_repair._run
+    sub = {"vm": str(rg["cfg"].get("vm", "")), "root": stack, "tree": stack}
+    try:
+        argv = [str(a).format(**sub) for a in rg["command"]]
+    except (KeyError, IndexError, ValueError):
+        return "failed", "settings file regen failed: the stack_env_regen command has an unknown placeholder"
+    rc, out = run(argv, 1800)
+    dst = os.path.join(stack, rg["path"])
+    if rc == 0 and not os.path.isfile(dst):
+        rc, out = 1, "the command exited 0 but wrote no " + rg["path"]
+    if rc != 0:
+        lines = [l for l in (out or "").strip().splitlines() if l.strip()]
+        tail = _scrub(lines[-1]) if lines else ""
+        return "failed", f"settings file regen failed: exit {rc}{': ' + tail if tail else ''}"
+    try:
+        os.chmod(dst, 0o600)
+    except OSError:
+        pass
+    _exclude(stack, rg["path"])
+    return "regenerated", f"STACK-ENV: {rg['path']} regenerated in {stack} by the repo's own step"
+
+
+def sync(main: str, ref: str, fetch: bool = True, state_files: list[str] | None = None, regen_run=None,
+         regen_cfg: dict | None = None) -> tuple[int, str]:
     main = os.path.realpath(main)
     if own_root(main) != main:
         return 2, f"stack_checkout: {main} is not a main checkout"
@@ -221,6 +294,11 @@ def sync(main: str, ref: str, fetch: bool = True, state_files: list[str] | None 
         out += "\nSTACK-STATE: copied " + ", ".join(copied)
     if lacking:
         out += "\nSTACK-STATE: absent in the main checkout, not copied: " + ", ".join(lacking)
+    state, text = regen_env(main, path, regen_run, regen_cfg)
+    if state == "failed":
+        return 2, out + "\n" + stop_line(text)
+    if state in ("regenerated", "fresh"):
+        out += "\n" + text
     return 0, out
 
 
@@ -331,6 +409,57 @@ def selftest() -> int:
         _git("clone", "--quiet", origin, main4)
         check("state: the list comes from the config, not the code (none configured -> none copied)",
               state_files_for(main4) == [] and "STACK-STATE" not in sync(main4, "origin/stub/x")[1])
+        # ---- the settings file is REGENERATED by the repo's own step, never copied ----
+        main5 = os.path.join(tmp, "fifth")
+        _git("clone", "--quiet", origin, main5)
+        open(os.path.join(main5, ".runtime.env"), "w").write(f"A={mark}\n")  # the main checkout's file: must never be copied
+        rg = {"cfg": {"vm": "v"}, "command": ["regen", "{root}"], "path": ".runtime.env", "source": "enc.env"}
+        calls: list[list[str]] = []
+
+        def fake_ok(argv, _t):
+            calls.append(argv)
+            f = os.path.join(argv[1], ".runtime.env")
+            open(f, "w").write(f"B={mark}-regen\n")
+            os.chmod(f, 0o644)
+            return 0, ""
+
+        buf = io.StringIO()
+        with redirect_stdout(buf), redirect_stderr(buf):
+            rc, out = sync(main5, "origin/stub/x", regen_run=fake_ok, regen_cfg=rg)
+            print(out)
+        s5 = stack_path(main5)
+        sf5 = os.path.join(s5, ".runtime.env")
+        check("regen: called when the stack checkout lacks the settings file, with the stack checkout as root, the main file is not copied",
+              rc == 0 and len(calls) == 1 and calls[0] == ["regen", s5] and open(sf5).read() == f"B={mark}-regen\n"
+              and "regenerated" in out and mark not in buf.getvalue(), out)
+        check("regen: the file is 0600 and excluded in the clone, so the next sync is not refused as dirty",
+              (os.stat(sf5).st_mode & 0o777) == 0o600 and _git("-C", s5, "status", "--porcelain", "--untracked-files=all").stdout.strip() == "")
+        rc, out = sync(main5, "origin/stub/x", regen_run=fake_ok, regen_cfg=rg)
+        check("regen: not called when the file is fresh (no source, or the source is older)", rc == 0 and len(calls) == 1 and "fresh" in out, out)
+        open(os.path.join(s5, "enc.env"), "w").write("x\n")
+        os.utime(os.path.join(s5, "enc.env"), (os.stat(sf5).st_mtime - 50, os.stat(sf5).st_mtime - 50))
+        _exclude(s5, "enc.env")
+        sync(main5, "origin/stub/x", regen_run=fake_ok, regen_cfg=rg)
+        check("regen: an older source keeps the file, no call", len(calls) == 1)
+        os.utime(os.path.join(s5, "enc.env"), (os.stat(sf5).st_mtime + 50, os.stat(sf5).st_mtime + 50))
+        sync(main5, "origin/stub/x", regen_run=fake_ok, regen_cfg=rg)
+        check("regen: called again when the file is older than the encrypted source", len(calls) == 2)
+        os.remove(sf5)
+        os.remove(os.path.join(main5, ".runtime.env"))
+
+        def fake_bad(argv, _t):
+            calls.append(argv)
+            return 3, f"noise\nup.sh: boom A={mark} token {'x' * 40}\n"
+
+        n0 = len(calls)
+        buf = io.StringIO()
+        with redirect_stdout(buf), redirect_stderr(buf):
+            rc, out = sync(main5, "origin/stub/x", regen_run=fake_bad, regen_cfg=rg)
+            print(out)
+        check("regen: a failing step stops with the exact line, exit code and scrubbed last line, nothing copied, no value printed",
+              rc == 2 and len(calls) == n0 + 1 and "STACK-ENV: stopped \u2014 settings file regen failed: exit 3: up.sh: boom" in out
+              and mark not in buf.getvalue() and "x" * 40 not in buf.getvalue() and not os.path.exists(sf5), out)
+        check("regen: no config key -> no regen", regen_env(main4, stack_path(main4))[0] == "none")
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
     print("all ok" if not fails else f"{fails} failed")

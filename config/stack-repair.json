@@ -66,9 +66,17 @@
         "--stack"
       ],
       "stack_state_files": [
-        ".runtime.env",
         "deploy/compose/nats/opmode/"
       ],
+      "stack_env_regen": {
+        "command": [
+          "bash",
+          "-lc",
+          "cd {root} && bash deploy/host/host.sh exec -- deploy/scripts/up.sh test"
+        ],
+        "path": ".runtime.env",
+        "source": "deploy/secrets/bootstrap.enc.env"
+      },
       "leftover_projects": [
         {
           "name": "nightwatch-w108",
