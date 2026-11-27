@@ -942,8 +942,9 @@ looked at ownership. Now, on a /stub session's `RUNNER: ENV stack ...` (never a 
 1. Settings file and state: the stack checkout's settings file (config-harness `.runtime.env`) is NEVER copied from the main
    checkout (owner ruling 2026-11-27): each checkout rebuilds it with the repo's own step, the config key `stack_env_regen`
    (`command` run for the stack checkout, the `path` it writes, the encrypted `source`; config-harness: the host-wrapper
-   `host.sh exec -- deploy/scripts/up.sh test` from the stack checkout, because up.sh has no settings-file-only mode and the
-   age key reaches sops only through `host.sh exec`). `stack_checkout.py sync` and `stack_env.ensure_settings()` (in
+   `host.sh exec -- deploy/scripts/up.sh --env-only` from the stack checkout: it writes `.runtime.env` and stops before any
+   compose call (config-harness #720), and the age key reaches sops only through `host.sh exec`; an up.sh without the mode
+   refuses the flag with exit 2 before any docker call, so the run stops instead of restarting the stack). `stack_checkout.py sync` and `stack_env.ensure_settings()` (in
    `verify()` and the handler) run it when the file is missing in the stack checkout or older than `source`, keep it 0600 and
    add it to the clone's `.git/info/exclude` unless git ignores it; a fresh file is not regenerated. A failing step ends the
    run with `STACK-ENV: stopped \u2014 settings file regen failed: <exit code + last output line, scrubbed>`; there is no copy

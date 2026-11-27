@@ -72,7 +72,7 @@
         "command": [
           "bash",
           "-lc",
-          "cd {root} && bash deploy/host/host.sh exec -- deploy/scripts/up.sh test"
+          "cd {root} && bash deploy/host/host.sh exec -- deploy/scripts/up.sh --env-only"
         ],
         "path": ".runtime.env",
         "source": "deploy/secrets/bootstrap.enc.env"
