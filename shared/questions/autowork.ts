@@ -4,7 +4,8 @@ import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs"
 import { homedir } from "node:os"
 import { join } from "node:path"
 import { runsDir } from "./runstore.ts"
-import { flowsFile, flowsOf } from "./deliveryflows.ts"
+import { flowsFile, flowsOf, flowsOfAsync } from "./deliveryflows.ts"
+import { readJsonAsync } from "./asyncio.ts"
 
 export type AutoMember = { id: string; stage: string; state: string; error: string; rounds: number }
 export type AutoPaused = { reason: string; kind: string; member: string; action: string; at: string }
@@ -24,13 +25,24 @@ function readJson(path: string): any {
 /** The one switch of a repository: automatic work (and, with it, the scripted stub merge). Off unless the file says so. */
 export const autoWorkOn = (repo: string, file = switchFile()): boolean => !!readJson(file)?.[repo]?.auto_work
 
+export const autoWorkOnAsync = async (repo: string, file = switchFile()): Promise<boolean> => !!(await readJsonAsync(file))?.[repo]?.auto_work
+export const eagerMergeOnAsync = async (repo: string, file = switchFile()): Promise<boolean> => (await readJsonAsync(file))?.[repo]?.eager_merge !== false
+/** `factsOn` with the switch files read off the main thread. */
+export const factsOnAsync = async (repo: string, file = switchFile(), flows = flowsFile()): Promise<boolean> =>
+  (await autoWorkOnAsync(repo, file)) || (await eagerMergeOnAsync(repo, file)) || (await flowsOfAsync(repo, flows)).kanban
+
 /** The eager-merge switch of a repository (each finished dossier joins the merge queue for the open stub), on unless set to false. It works with automatic work off. */
 export const eagerMergeOn = (repo: string, file = switchFile()): boolean => readJson(file)?.[repo]?.eager_merge !== false
 /** Whether a repository's facts go to the script: automatic work or eager merge is on. */
 // The kanban pull (auto_work.py) runs on the kanban flow switch alone, so a kanban-on repository sends its facts too.
 export const factsOn = (repo: string, file = switchFile(), flows = flowsFile()): boolean => autoWorkOn(repo, file) || eagerMergeOn(repo, file) || flowsOf(repo, flows).kanban
 export function readAutoState(repo: string, dir = runsDir()): AutoState | null {
-  const s = readJson(join(dir, `${repo}.auto-work.json`))
+  return autoStateOf(repo, readJson(join(dir, `${repo}.auto-work.json`)))
+}
+export async function readAutoStateAsync(repo: string, dir = runsDir()): Promise<AutoState | null> {
+  return autoStateOf(repo, await readJsonAsync(join(dir, `${repo}.auto-work.json`)))
+}
+function autoStateOf(repo: string, s: any): AutoState | null {
   if (!s || typeof s !== "object" || !Array.isArray(s.members)) return null
   return {
     repo, cycle: Number(s.cycle) || 0, step: String(s.step ?? "idle"), phase: String(s.phase ?? "idle"), started: String(s.started ?? ""), stub: String(s.stub ?? ""), integrating: String(s.integrate?.branch ?? ""),
@@ -69,6 +81,14 @@ export function viewsFor(runs: { repo: string; root: string; main?: string }[], 
   const seen = new Map<string, string>()
   for (const r of runs) if ((r.main || r.root) && !seen.has(r.repo)) seen.set(r.repo, r.main || r.root)
   return [...seen].map(([repo, root]) => ({ repo, root, on: on(repo), state: state(repo) }))
+}
+
+/** `viewsFor` with the switch and the state files read off the main thread: the request path's version. */
+export async function viewsForAsync(runs: { repo: string; root: string; main?: string }[], file = switchFile(), dir = runsDir()): Promise<AutoView[]> {
+  const on = new Map<string, boolean>(), st = new Map<string, AutoState | null>()
+  const repos = [...new Set(runs.map((r) => r.repo))]
+  await Promise.all(repos.map(async (r) => { on.set(r, await autoWorkOnAsync(r, file)); st.set(r, await readAutoStateAsync(r, dir)) }))
+  return viewsFor(runs, (r) => on.get(r) ?? false, (r) => st.get(r) ?? null)
 }
 
 export const AUTO_ACTIONS = ["enable", "disable", "start-now", "resume"] as const

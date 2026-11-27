@@ -1,8 +1,8 @@
 // Owner-questions store: one append-only <id>.jsonl per question (see references/owner-questions.md).
-import { closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, statSync, writeSync } from "node:fs"
+import { closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync, writeSync } from "node:fs"
 import { homedir } from "node:os"
 import { join } from "node:path"
-import { readdir } from "node:fs/promises"
+import { readdir, rename, unlink, writeFile } from "node:fs/promises"
 import { fileSig, IO_CONCURRENCY, mapLimit, readText } from "./asyncio.ts"
 
 export type Line = {
@@ -118,26 +118,193 @@ export async function readQuestionAsync(dir: string, id: string): Promise<Questi
 }
 
 /**
- * `readAll` off the main thread: async stat and read, 16 files at a time, unchanged files served from the cache.
- * One page load asks for the list several times at once (the runs view, the open list, the stub view); callers that
- * arrive while a read of the same folder is in flight share it, so the ~600 stats run once, not once per caller.
- * `appendOwner` drops the shared read: a caller after an owner line never gets a list that began before it.
+ * The open-question index: `<dir>/open-index.json` = `{ v: 1, open: [id...], closed: [id...] }`, the ids by state, so a
+ * list call reads the few open questions and not every file in the folder. Writers (appendOwner here, ask_owner.py and
+ * auto_work.py in other processes) update it under `<dir>/open-index.lock` (create-exclusive, stale after 10 s), writing
+ * a temp file and renaming it. The index is a hint and never the truth: the folder listing is. An id in the folder that
+ * the index does not list (a writer that bypassed it, a file written by hand) is read once and classified; a missing or
+ * corrupt index is rebuilt from a full read; a background sweep every 60 s re-reads every question, so a wrong entry
+ * lives at most that long. A question is hidden only when the index calls it closed while its file says open, and the
+ * sweep fixes that. A closed (answered) question is final (AnsweredError), so it is kept in memory without a stat.
  */
-const listing = new Map<string, Promise<Question[]>>()
-export async function readAllAsync(dir: string): Promise<Question[]> {
-  let p = listing.get(dir)
-  if (!p) {
-    p = readAllUncached(dir).finally(() => { if (listing.get(dir) === p) listing.delete(dir) })
-    listing.set(dir, p)
-  }
-  return [...(await p)]
+export const INDEX_FILE = "open-index.json"
+export const LOCK_FILE = "open-index.lock"
+export const SWEEP_MS = 60_000
+const LOCK_STALE_MS = 10_000
+type Index = { v: 1; open: string[]; closed: string[] }
+
+function parseIndex(text: string | null): Index | null {
+  if (text === null) return null
+  try {
+    const o = JSON.parse(text)
+    const ok = (a: unknown) => Array.isArray(a) && a.every((x) => typeof x === "string")
+    return o && o.v === 1 && ok(o.open) && ok(o.closed) ? { v: 1, open: o.open, closed: o.closed } : null
+  } catch { return null }
 }
 
-async function readAllUncached(dir: string): Promise<Question[]> {
-  const ids = (await readdir(dir)).filter((f) => f.endsWith(".jsonl")).map((f) => f.slice(0, -".jsonl".length))
-  const qs = await mapLimit(ids, IO_CONCURRENCY, (id) => readQuestionAsync(dir, id))
-  const out = qs.filter((q): q is Question => q !== null)
-  return out.sort((a, b) => a.ts.localeCompare(b.ts) || a.id.localeCompare(b.id))
+/** `idx` with `id` moved to the list of `state`; every other id untouched. */
+function moved(idx: Index, id: string, state: "open" | "closed"): Index {
+  const open = idx.open.filter((x) => x !== id), closed = idx.closed.filter((x) => x !== id)
+  ;(state === "open" ? open : closed).push(id)
+  return { v: 1, open, closed }
+}
+
+function tryLock(dir: string): boolean {
+  const lp = join(dir, LOCK_FILE)
+  try { closeSync(openSync(lp, "wx")); return true } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === "EEXIST") {
+      try { if (Date.now() - statSync(lp).mtimeMs > LOCK_STALE_MS) unlinkSync(lp) } catch { /* another writer took it */ }
+    }
+    return false
+  }
+}
+const unlock = (dir: string) => { try { unlinkSync(join(dir, LOCK_FILE)) } catch { /* gone */ } }
+
+/**
+ * Record that question `id` is `state` in the index, for the writers that run in their own process (sync, short).
+ * Best effort: a missing or unreadable index is left for the server to rebuild, and a lock not won in 2 s is skipped;
+ * both are caught by the folder check, so a missed note never hides a question.
+ */
+export function noteQuestion(dir: string, id: string, state: "open" | "closed"): void {
+  const path = join(dir, INDEX_FILE)
+  if (!existsSync(path)) return
+  const until = Date.now() + 2000
+  const nap = new Int32Array(new SharedArrayBuffer(4))
+  while (!tryLock(dir)) {
+    if (Date.now() > until) return
+    Atomics.wait(nap, 0, 0, 5)
+  }
+  try {
+    const idx = parseIndex((() => { try { return readFileSync(path, "utf8") } catch { return null } })())
+    if (!idx) return
+    const tmp = `${path}.${process.pid}.tmp`
+    writeFileSync(tmp, JSON.stringify(moved(idx, id, state)))
+    renameSync(tmp, path)
+  } catch { /* the rebuild covers it */ } finally { unlock(dir) }
+}
+
+/** Apply `change` to the index file under the lock (async, for the server); `null` from `change` leaves it alone. */
+async function updateIndex(dir: string, change: (cur: Index | null) => Index | null): Promise<void> {
+  const path = join(dir, INDEX_FILE)
+  const until = Date.now() + 2000
+  while (!tryLock(dir)) {
+    if (Date.now() > until) return
+    await new Promise((r) => setTimeout(r, 5))
+  }
+  try {
+    const next = change(parseIndex(await readText(path)))
+    if (!next) return
+    const tmp = `${path}.${process.pid}.tmp`
+    await writeFile(tmp, JSON.stringify(next))
+    await rename(tmp, path)
+  } catch { /* the next call retries */ } finally { unlock(dir) }
+}
+
+type DirState = { open: Set<string>; closed: Set<string>; retired: Map<string, Question>; sig: string | null | undefined; sweptAt: number; sweeping: boolean }
+const dirStates = new Map<string, DirState>()
+const stateOf = (dir: string): DirState => {
+  let s = dirStates.get(dir)
+  if (!s) dirStates.set(dir, (s = { open: new Set(), closed: new Set(), retired: new Map(), sig: undefined, sweptAt: Date.now(), sweeping: false }))
+  return s
+}
+
+/**
+ * Bring the in-memory view of `dir` up to date and return the open questions (and the answered ones when `withClosed`).
+ * Per call: one folder listing, one stat of the index, and a stat plus read of the open questions only.
+ */
+async function syncDir(dir: string, withClosed: boolean): Promise<{ open: Question[]; closed: Question[] }> {
+  const st = stateOf(dir)
+  const ids = new Set((await readdir(dir)).filter((f) => f.endsWith(".jsonl")).map((f) => f.slice(0, -".jsonl".length)))
+  const indexPath = join(dir, INDEX_FILE)
+  const sig = await fileSig(indexPath)
+  let rebuild = false
+  if (sig !== st.sig) {
+    const idx = parseIndex(await readText(indexPath))
+    if (idx) { st.open = new Set(idx.open); st.closed = new Set(idx.closed) } else { st.open.clear(); st.closed.clear(); rebuild = true }
+    st.sig = sig
+  }
+  const toOpen = new Set<string>(), toClosed = new Set<string>(), gone = new Set<string>()
+  for (const id of [...st.open, ...st.closed]) if (!ids.has(id)) { gone.add(id); st.open.delete(id); st.closed.delete(id); st.retired.delete(id) }
+  const cand = [...ids].filter((id) => !st.closed.has(id))
+  const qs = await mapLimit(cand, IO_CONCURRENCY, (id) => readQuestionAsync(dir, id))
+  const open: Question[] = []
+  cand.forEach((id, i) => {
+    const q = qs[i]
+    if (!q) return
+    if (q.state === "answered") {
+      if (!st.closed.has(id)) toClosed.add(id)
+      st.open.delete(id); st.closed.add(id); st.retired.set(id, q)
+    } else {
+      if (!st.open.has(id)) toOpen.add(id)
+      st.open.add(id); open.push(q)
+    }
+  })
+  const closed: Question[] = []
+  if (withClosed) {
+    const missing = [...st.closed].filter((id) => !st.retired.has(id))
+    const rs = await mapLimit(missing, IO_CONCURRENCY, (id) => readQuestionAsync(dir, id))
+    missing.forEach((id, i) => { const q = rs[i]; if (q) st.retired.set(id, q) })
+    for (const id of st.closed) { const q = st.retired.get(id); if (q) closed.push(q) }
+  }
+  if (rebuild || toOpen.size || toClosed.size || gone.size) {
+    await updateIndex(dir, (cur) => {
+      if (!cur || rebuild) return { v: 1, open: [...st.open], closed: [...st.closed] }
+      let next = cur
+      for (const id of gone) next = { v: 1, open: next.open.filter((x) => x !== id), closed: next.closed.filter((x) => x !== id) }
+      for (const id of toOpen) next = moved(next, id, "open")
+      for (const id of toClosed) next = moved(next, id, "closed")
+      return next
+    })
+    st.sig = await fileSig(indexPath)
+  }
+  if (Date.now() - st.sweptAt > SWEEP_MS && !st.sweeping) void sweep(dir, st)
+  return { open, closed }
+}
+
+/** Background check of every question against its file: catches a wrong index entry and a line added to an answered question. */
+async function sweep(dir: string, st: DirState): Promise<void> {
+  st.sweeping = true
+  try {
+    const ids = [...st.closed]
+    const qs = await mapLimit(ids, IO_CONCURRENCY, (id) => readQuestionAsync(dir, id))
+    const reopened: string[] = []
+    ids.forEach((id, i) => {
+      const q = qs[i]
+      if (!q) return
+      if (q.state === "open") { st.closed.delete(id); st.retired.delete(id); st.open.add(id); reopened.push(id) } else st.retired.set(id, q)
+    })
+    if (reopened.length) {
+      await updateIndex(dir, (cur) => { let next = cur ?? { v: 1 as const, open: [], closed: [] }; for (const id of reopened) next = moved(next, id, "open"); return next })
+      st.sig = await fileSig(join(dir, INDEX_FILE))
+    }
+  } catch { /* the next sweep retries */ } finally { st.sweptAt = Date.now(); st.sweeping = false }
+}
+
+/**
+ * Every question, off the main thread. One page load asks for the list several times at once; callers that arrive
+ * while a read of the same folder is in flight share it. `appendOwner` drops the shared read: a caller after an owner
+ * line never gets a list that began before it. Answered questions come from memory (see the index note above).
+ */
+const listing = new Map<string, Promise<Question[]>>()
+const openListing = new Map<string, Promise<Question[]>>()
+const byTime = (a: Question, b: Question) => a.ts.localeCompare(b.ts) || a.id.localeCompare(b.id)
+
+function shared(map: Map<string, Promise<Question[]>>, dir: string, read: () => Promise<Question[]>): Promise<Question[]> {
+  let p = map.get(dir)
+  if (!p) {
+    p = read().finally(() => { if (map.get(dir) === p) map.delete(dir) })
+    map.set(dir, p)
+  }
+  return p
+}
+
+export async function readAllAsync(dir: string): Promise<Question[]> {
+  return [...(await shared(listing, dir, async () => { const r = await syncDir(dir, true); return [...r.open, ...r.closed].sort(byTime) }))]
+}
+
+/** The open questions only: the hot path of the dashboard's polls reads no answered question. */
+export async function readOpenAsync(dir: string): Promise<Question[]> {
+  return [...(await shared(openListing, dir, async () => (await syncDir(dir, false)).open.sort(byTime)))]
 }
 
 export async function readSidecarAsync(dir: string, id: string): Promise<Sidecar | null> {
@@ -172,13 +339,14 @@ export function appendOwner(
   // VR-04: a line about one diagram element carries its anchor; the batch answer of a visual review is marked so Slack does not repeat it.
   if (m.anchor) line.anchor = m.anchor
   if (m.review) line.review = true
-  listing.delete(dir)
+  listing.delete(dir); openListing.delete(dir)
   const fd = openSync(join(dir, `${id}.jsonl`), "a")
   try {
     writeSync(fd, JSON.stringify(line) + "\n")
   } finally {
     closeSync(fd)
   }
+  noteQuestion(dir, id, m.kind === "answer" ? "closed" : "open")
   return readQuestion(dir, id)!
 }
 

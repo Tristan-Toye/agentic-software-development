@@ -853,4 +853,26 @@ not when it is merely slow:
   scan worker (`scanpool.ts`), the pid liveness reads are cached for 3 s, the
   question-to-run linking is indexed by dossier id (not a scan of every run per
   question), and the chat list is read async.
+- The question list does not re-read the folder (about 1300 files) on each call:
+  the **open-question index** `<questions dir>/open-index.json`,
+  `{ "v": 1, "open": [ids], "closed": [ids] }`, tells the server which questions
+  are open. A list call does one folder listing, one stat of the index and a read
+  of the open questions only (`readOpenAsync`); answered questions are kept in
+  memory without a stat (the first answer is final) and read once, lazily, by the
+  views that need them (`readAllAsync`: history, a run's Q&A, linkQuestions).
+  Writers update the index under `open-index.lock` (create-exclusive, stale after
+  10 s; temp file plus rename): `appendOwner` in `store.ts`, and `ask_owner.py`
+  (`ask`, `accept`) and `auto_work.py` (pause question, close) in their own
+  processes through `index_note`. The index is a hint, never the truth: the
+  folder listing is. An id the index does not list (a writer that bypassed it, a
+  file written by hand) is read and classified at once; a missing or corrupt
+  index is rebuilt from a full read; a background sweep every 60 s re-reads every
+  answered question (a line added after the answer, a wrong entry). A missed
+  note therefore never hides an open question. The runs MCP server writes
+  nothing: it goes through the HTTP API.
+- The small JSON reads on request paths (accounts, delivery flows, the auto-work
+  switch and state) are async and cached by file size and mtime
+  (`readJsonAsync`); an unreadable file reads as the defaults and is never
+  overwritten. The earlier idea of keeping a question list for a fixed time
+  (`ASD_QUESTION_LIST_KEEP_MS`) was dropped; nothing keeps a list by time.
 
