@@ -255,7 +255,9 @@ with the approval lint.
 4. On `FOLLOWUP`, answer with `reply` (facts, not a new recommendation unless
    asked), then wait again.
 5. On `ANSWER`, record `OWNER-RULING (<date>): <id> — <ruling>` in the build
-   log, then continue.
+   log, then continue. When the ruling is "its own dossier" (a follow-up),
+   also log `FOLLOW-UP-DOSSIER: <key> — <one-line summary>; seed: <the description>`
+   in the same step: the runner plans it (a D-item keeps `DEFERRED-TRIAGE: D-n → dossier`).
 
 ## The server
 

@@ -364,6 +364,11 @@ the owner only when the fix would change behaviour or a contract.
 
 ## Step 7 — Plan the items routed to their own dossier
 
+An owner-ruled `DEFERRED-TRIAGE: D-n → dossier` is also picked up by the
+runner's auto-work tick when this step did not plan it (references/runner.md,
+Follow-up dossiers); any other follow-up that needs its own dossier is logged
+as `FOLLOW-UP-DOSSIER: <key> — <summary>; seed: <description>`, never free text.
+
 Call `phase_checkpoint` for `Fix-deferred — Step 7 — Plan the routed items`.
 
 Every item logged `DEFERRED-TRIAGE: D-n → dossier` (the owner ruled it, or a

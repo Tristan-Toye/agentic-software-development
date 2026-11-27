@@ -409,6 +409,28 @@ the recorded checkpoints.
   item routed to its own dossier, under the key `<repo>.<ID>.plan-D-n`, so
   several items plan at once beside any run of the source. `/fix-deferred`
   Step 7 starts one per routed item; the dashboard's Plan it starts one.
+- **Follow-up dossiers (auto-work tick):** every build-log line
+  `FOLLOW-UP-DOSSIER: <key> — <one-line summary>; seed: <the description>` (key
+  like `W-215 F-2` or `W-213 Q4`) and every owner-ruled
+  `DEFERRED-TRIAGE: D-n → dossier` with no linked dossier is planned by
+  `auto_work.py --tick` (`followup_step`): a marker as
+  `seed-fu-<parent>-<key>` (`--command plan --seed`, the brief in
+  `<repo>.<key>.followup.md`), a D-item as `<repo>.<ID>.plan-D-n`. It goes
+  through the slot cap and queue like any run, and is skipped while a run of
+  that key is live, queued or finished, or its last start is under
+  `ASD_FOLLOWUP_RETRY_AFTER` (900 s) old. At most 2 per tick
+  (`FOLLOWUP_PER_TICK`), a failed run is retried until 3 tries
+  (`FOLLOWUP_TRIES`), then an ALARM is recorded in `<repo>.follow-ups.json`.
+  Only the repo's `auto_work` switch gates it (the stub-auto-merge settings
+  file); off launches nothing. Items from a dossier older than
+  `ASD_FOLLOWUP_SINCE` (2026-11-27) are shown, never auto-planned. The plan
+  session back-links with `FOLLOW-UP-PLANNED: <key> → <new ID>` (or
+  `FOLLOW-UP-COVERED: <key> → <ID>`) in the parent, and
+  `FOLLOW-UP-SOURCE: <parent> <key>` in the new dossier; runs.ts links them
+  as it does `DEFERRED-DOSSIER`. The dashboard repo page and Deferred tab list
+  every ruled follow-up without a dossier, including the legacy free-text
+  forms (`FOLLOW-UP-DOSSIER-n`, `FOLLOW-UP-IDEA`, `DEFERRED-SCOPE`, an
+  `OWNER-RULING` saying own dossier), read-only.
 - **`seed-<slug> --command plan --seed FILE`:** a free-form `/plan` (a
   description, no dossier and no deferred item yet). The id is a slug,
   `seed-<lowercase words>`, so the key is `<repo>.seed-<slug>`. The runner

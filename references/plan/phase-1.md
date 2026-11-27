@@ -30,6 +30,17 @@ points at:
   there, and no other run's copy of the source is touched. Log
   `DEFERRED-DOSSIER: D-3 → <new ID>` in the source dossier's `## Build log`
   too when its copy is yours to edit (no live run on it).
+- **A follow-up seed from the runner** (the description came from a
+  `FOLLOW-UP-DOSSIER: <key> — <summary>; seed: <description>` line of a parent
+  dossier; the run key is `seed-fu-<parent>-<key>`): the brief names the parent
+  and the key. First check that no dossier already covers it (`grep` the
+  dossiers' `## Problem`); if one does, log `FOLLOW-UP-COVERED: <key> → <ID>` in
+  the parent's `## Build log` and stop. Otherwise plan it as any seed, and once
+  the new dossier has its ID log `FOLLOW-UP-SOURCE: <parent ID> <key>` in the
+  new dossier's own `## Build log` (the dashboard and the runner link the item
+  from there) and `FOLLOW-UP-PLANNED: <key> → <new ID>` in the parent's when its
+  copy is yours to edit (no live run on it). The same link closes the item
+  whichever side is logged.
 - **A dossier ID** (`W-014`) → a `planned` dossier that needs this command
   again: `/work-on` returned it with a `RETURNED-TO-PLAN:` line, or an
   earlier `/plan` run stopped at its review budget. Read the last lines of
