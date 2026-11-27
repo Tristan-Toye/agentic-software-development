@@ -18,20 +18,36 @@ rebuilds the fixture from it for a run in it. The dashboard leaves it out of its
 
 Ignored files (a `.runtime.env` written by `up.sh`, build output) stay between runs.
 
+The stack's UNTRACKED state exists only in the main checkout (a `.runtime.env` written by `up.sh`, the NATS
+operator-mode key set under `deploy/compose/nats/opmode/` where a repo keeps one there), so a fresh stack checkout
+would have no settings file and the repo's env script would refuse in it. `sync` therefore copies the paths the
+repo's stack-repair config lists as `stack_state_files` (a trailing `/` marks a directory) from the main checkout
+when the stack checkout lacks them or holds an older copy: files 0600, directories 0700, written through a temp
+file and renamed, symlinks skipped, contents never printed (the output names the paths only). It only ever COPIES
+the main checkout's existing set: nothing here generates a key, and a path the main checkout lacks is skipped and
+named. Each copied path is also added to the stack checkout's own `.git/info/exclude` when git does not already
+ignore it, so the dirty-tree refusal above never trips on state it put there itself.
+
 # Usage
 
     stack_checkout.py sync --root /abs/main/checkout --ref origin/stub/2026-11-18 [--no-fetch]
     stack_checkout.py path --root /abs/main/checkout
     stack_checkout.py --selftest
 
-`sync` prints `STACK-CHECKOUT: <path> <full sha>` and exits 0; exit 2 for a refusal, with the reason.
+`sync` prints `STACK-CHECKOUT: <path> <full sha>` (then `STACK-STATE: copied <paths>` when it copied any) and exits
+0; exit 2 for a refusal, with the reason.
 """
 from __future__ import annotations
 
 import argparse
 import os
+import shutil
 import subprocess
 import sys
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, HERE)
+import stack_repair  # noqa: E402
 
 SUFFIX = "-stack"
 
@@ -75,7 +91,90 @@ def is_stack_checkout(tree: str) -> bool:
     return bool(url) and own_root(main) == main and origin_url(main) == url
 
 
-def sync(main: str, ref: str, fetch: bool = True) -> tuple[int, str]:
+def state_files_for(main: str) -> list[str]:
+    """The untracked state paths the repo's stack-repair config lists (`stack_state_files`), [] when none."""
+    cfg = stack_repair.load_config(main)
+    raw = (cfg or {}).get("stack_state_files") or []
+    return [p for p in raw if isinstance(p, str) and p.strip() and not os.path.isabs(p) and ".." not in p.split("/")]
+
+
+def _newer(src: str, dst: str) -> bool:
+    try:
+        return not os.path.exists(dst) or os.stat(src).st_mtime > os.stat(dst).st_mtime
+    except OSError:
+        return False
+
+
+def _copy_file(src: str, dst: str) -> None:
+    """Copy `src` over `dst` at mode 0600 through a temp file beside it; the content is never read into Python text."""
+    os.makedirs(os.path.dirname(dst), exist_ok=True)
+    tmp = f"{dst}.tmp.{os.getpid()}"
+    try:
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, "wb") as out, open(src, "rb") as inp:
+            shutil.copyfileobj(inp, out)
+        os.replace(tmp, dst)
+        os.chmod(dst, 0o600)
+    finally:
+        if os.path.lexists(tmp):
+            os.remove(tmp)
+
+
+def _exclude(tree: str, rel: str) -> None:
+    """Make git in `tree` ignore `rel` (its own .git/info/exclude) unless it already does."""
+    probe = rel.rstrip("/") + ("/x" if rel.endswith("/") else "")
+    if _git("-C", tree, "check-ignore", "-q", probe, timeout=20).returncode == 0:
+        return
+    ex = _git("-C", tree, "rev-parse", "--path-format=absolute", "--git-path", "info/exclude", timeout=20).stdout.strip()
+    if not ex:
+        return
+    os.makedirs(os.path.dirname(ex), exist_ok=True)
+    line = "/" + rel
+    try:
+        have = open(ex, encoding="utf-8").read().splitlines()
+    except OSError:
+        have = []
+    if line not in have:
+        with open(ex, "a", encoding="utf-8") as f:
+            f.write(line + "\n")
+
+
+def sync_state(main: str, stack: str, rels: list[str]) -> tuple[list[str], list[str]]:
+    """Copy the main checkout's untracked stack state into `stack`: (copied paths, paths main lacks). Names only."""
+    copied: list[str] = []
+    lacking: list[str] = []
+    for rel in rels:
+        src, dst = os.path.join(main, rel), os.path.join(stack, rel)
+        if rel.endswith("/"):
+            if not os.path.isdir(src) or os.path.islink(src):
+                lacking.append(rel)
+                continue
+            os.makedirs(dst, exist_ok=True)
+            os.chmod(dst, 0o700)
+            for dirpath, dirnames, filenames in os.walk(src):
+                here = os.path.join(dst, os.path.relpath(dirpath, src))
+                os.makedirs(here, exist_ok=True)
+                os.chmod(here, 0o700)
+                for name in filenames:
+                    f = os.path.join(dirpath, name)
+                    if os.path.islink(f):
+                        continue
+                    t = os.path.join(here, name)
+                    if _newer(f, t):
+                        _copy_file(f, t)
+                        copied.append(os.path.relpath(t, stack))
+        else:
+            if not os.path.isfile(src) or os.path.islink(src):
+                lacking.append(rel)
+                continue
+            if _newer(src, dst):
+                _copy_file(src, dst)
+                copied.append(rel)
+        _exclude(stack, rel)
+    return copied, lacking
+
+
+def sync(main: str, ref: str, fetch: bool = True, state_files: list[str] | None = None) -> tuple[int, str]:
     main = os.path.realpath(main)
     if own_root(main) != main:
         return 2, f"stack_checkout: {main} is not a main checkout"
@@ -83,9 +182,13 @@ def sync(main: str, ref: str, fetch: bool = True) -> tuple[int, str]:
     if not url:
         return 2, f"stack_checkout: {main} has no origin remote"
     path = stack_path(main)
+    rels = state_files_for(main) if state_files is None else state_files
     if os.path.lexists(path):
         if own_root(path) != path or origin_url(path) != url:
             return 2, f"stack_checkout: {path} exists but is not a clone of {url}; left untouched"
+        for rel in rels:
+            if os.path.exists(os.path.join(path, rel)):
+                _exclude(path, rel)  # state an earlier sync put there is never "dirty"
         dirty = _git("-C", path, "status", "--porcelain", "--untracked-files=all").stdout.splitlines()
         if dirty:
             shown = ", ".join(l[3:] for l in dirty[:5]) + (" …" if len(dirty) > 5 else "")
@@ -109,7 +212,16 @@ def sync(main: str, ref: str, fetch: bool = True) -> tuple[int, str]:
     head = _git("-C", path, "rev-parse", "HEAD").stdout.strip()
     if head != sha:
         return 2, f"stack_checkout: {path} is at {head[:12]}, not {sha[:12]}"
-    return 0, f"STACK-CHECKOUT: {path} {sha}"
+    out = f"STACK-CHECKOUT: {path} {sha}"
+    try:
+        copied, lacking = sync_state(main, path, rels)
+    except OSError as e:
+        return 2, f"stack_checkout: copying the stack state failed: {type(e).__name__} {e.filename or ''}".strip()
+    if copied:
+        out += "\nSTACK-STATE: copied " + ", ".join(copied)
+    if lacking:
+        out += "\nSTACK-STATE: absent in the main checkout, not copied: " + ", ".join(lacking)
+    return 0, out
 
 
 def selftest() -> int:
@@ -179,6 +291,46 @@ def selftest() -> int:
         os.makedirs(stack_path(main3))
         rc, out = sync(main3, "origin/stub/x")
         check("a plain directory at the stack path is left untouched", rc == 2 and "not a clone" in out)
+
+        # ---- the untracked stack state (.runtime.env, the opmode key set): copied, 0600/0700, never printed ----
+        import io
+        from contextlib import redirect_stdout, redirect_stderr
+        mark = "SECRET-MARKER-9f3a"
+        rels = [".runtime.env", "deploy/compose/nats/opmode/"]
+        open(os.path.join(main, ".runtime.env"), "w").write(f"A={mark}\n")
+        os.makedirs(os.path.join(main, "deploy/compose/nats/opmode"))
+        open(os.path.join(main, "deploy/compose/nats/opmode/operator.seed"), "w").write(mark + "\n")
+        os.chmod(os.path.join(main, ".runtime.env"), 0o644)
+        buf = io.StringIO()
+        with redirect_stdout(buf), redirect_stderr(buf):
+            rc, out = sync(main, "origin/stub/x", state_files=rels)
+            print(out)
+        shown = buf.getvalue()
+        sf = os.path.join(path, ".runtime.env")
+        kf = os.path.join(path, "deploy/compose/nats/opmode/operator.seed")
+        check("state: .runtime.env and the opmode dir are copied, the output names paths and no value",
+              rc == 0 and open(sf).read() == f"A={mark}\n" and open(kf).read() == mark + "\n"
+              and mark not in shown and "STACK-STATE: copied" in shown and ".runtime.env" in shown, shown)
+        check("state: files 0600, the directory 0700 whatever the source modes",
+              (os.stat(sf).st_mode & 0o777) == 0o600 and (os.stat(kf).st_mode & 0o777) == 0o600
+              and (os.stat(os.path.dirname(kf)).st_mode & 0o777) == 0o700)
+        rc, out = sync(main, "origin/stub/x", state_files=rels)
+        check("state: not ignored by git, yet the next sync is not refused as dirty (excluded in the stack checkout)",
+              rc == 0 and "copied" not in out and _git("-C", path, "status", "--porcelain", "--untracked-files=all").stdout.strip() == "", out)
+        open(sf, "w").write("A=mine-newer\n")
+        future = os.stat(sf).st_mtime + 100
+        os.utime(sf, (future, future))
+        sync(main, "origin/stub/x", state_files=rels)
+        check("state: a newer copy in the stack checkout is kept", open(sf).read() == "A=mine-newer\n")
+        os.utime(os.path.join(main, ".runtime.env"), (future + 100, future + 100))
+        rc, out = sync(main, "origin/stub/x", state_files=rels)
+        check("state: an older copy in the stack checkout is replaced from main", open(sf).read() == f"A={mark}\n" and ".runtime.env" in out)
+        rc, out = sync(main, "origin/stub/x", state_files=[".runtime.env", "nope/"])
+        check("state: a path main lacks is named, never generated", rc == 0 and "nope/" in out and not os.path.exists(os.path.join(path, "nope")))
+        main4 = os.path.join(tmp, "fourth")
+        _git("clone", "--quiet", origin, main4)
+        check("state: the list comes from the config, not the code (none configured -> none copied)",
+              state_files_for(main4) == [] and "STACK-STATE" not in sync(main4, "origin/stub/x")[1])
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
     print("all ok" if not fails else f"{fails} failed")

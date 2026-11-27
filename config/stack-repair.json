@@ -65,9 +65,23 @@
       "suite_markers": [
         "--stack"
       ],
+      "stack_state_files": [
+        ".runtime.env",
+        "deploy/compose/nats/opmode/"
+      ],
       "leftover_projects": [
         {
           "name": "nightwatch-w108",
+          "handoff": true,
+          "handoff_up": [
+            "limactl",
+            "shell",
+            "{vm}",
+            "--",
+            "bash",
+            "-lc",
+            "cd {root} && bash deploy/host/opmode-stack.sh up"
+          ],
           "owner_probe": [
             "limactl",
             "shell",

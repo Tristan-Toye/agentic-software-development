@@ -87,6 +87,7 @@ CUT = 3500
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import stack_repair  # noqa: E402
+import stack_checkout  # noqa: E402
 import stack_env  # noqa: E402
 import driver_modes  # noqa: E402
 import planning_runs  # noqa: E402
@@ -116,7 +117,7 @@ You run under the dossier runner and nobody reads the terminal.
 - The owner's Start is standing authority (references/owner-questions.md, "What is worth asking"): pushing the dossier's own branch and opening or updating its draft PR into the base or the accepting stub is yes; so is a graduation issue in the plugin repository, and committing a repository rule from this build on the dossier's branch (the PR ratifies it). Carry out the readings, defaults and rulings the dossier already records; never ask to confirm them. Ask only technical, architectural or product design questions the dossier leaves open, issues you cannot resolve in scope, and actions outside that authority (a merge, except a /stub run's own pull requests into its stub, which it merges with scripts/stub_own_merge.py and never asks about; a push to a protected branch, a force-push, Jira writes, deleting what is not the run's own). Do the authorized ones, log them, and name them in your next update.
 - The plugin's references (`references/work-on/phase-*.md`, `formats/*`, `runner.md`) are long and the same in every stage: read only the section your step needs (`ref_section` with the document's short name, `phase-4` or `formats/dossier`, and a heading or `--list`), not whole files; the phase file you start a phase with is the one you read whole, and never the same section twice in one stage.
 - Phase 2 takes its stub from `python3 scripts/stub_target.py --root R` (the plugin's scripts). Exit 3 (`wait <stub>`) means that stub is being integrated and no new one may be cut until it is in development: end the turn with the line `RUNNER: WAITING stub`; the runner waits without tokens and sends `STUB READY: <branch>` once the new stub is cut. Never cut a stub yourself.
-- A broken environment (the Lima VM stopped or unreachable, a shared docker compose service unhealthy, the disk low) is not an owner question: end the turn with the single line `RUNNER: ENV <vm|stack|disk> <short detail>` and nothing after it. The runner repairs vm and stack when the owner enabled that and answers `RUNNER ENV <kind>: repaired ...` (carry on) or `RUNNER ENV vm: not repaired ...` (then ask the owner as usual). For `stack` the runner never answers with an owner question: a bring-up that a foreign or leftover compose project refuses (`foreign_project_state owner=...`, `suite_window_active holder=...`) is reported as `RUNNER: ENV stack <the refusal line>`; the runner tears a leftover project down itself when it can prove it dead and answers `repaired`, otherwise it answers to skip your live stack tests, defer those criteria to the /stub full suite and head the PR note with `STACK-ENV: skipped — ...`. You never tear down, bring up or restart a shared stack project yourself (opmode-stack.sh, up.sh, compose) and never ask the owner about it. A disk is never repaired automatically. A stale shared fake-llm fixture is the runner's: run tests through `run_tests.py --vm` (it rebuilds from the persistent checkout or skips the DB tests under `STACK-ENV: skipped`); never rebuild or restart a shared stack service from your worktree, and never ask the owner about it.
+- A broken environment (the Lima VM stopped or unreachable, a shared docker compose service unhealthy, the disk low) is not an owner question: end the turn with the single line `RUNNER: ENV <vm|stack|disk> <short detail>` and nothing after it. The runner repairs vm and stack when the owner enabled that and answers `RUNNER ENV <kind>: repaired ...` (carry on) or `RUNNER ENV vm: not repaired ...` (then ask the owner as usual). For `stack` the runner never answers with an owner question: a bring-up that a foreign or leftover compose project refuses (`foreign_project_state owner=...`, `suite_window_active holder=...`) is reported as `RUNNER: ENV stack <the refusal line>`; the runner tears a leftover project down itself when it can prove it dead and answers `repaired`, otherwise it answers to skip your live stack tests, defer those criteria to the /stub full suite and head the PR note with `STACK-ENV: skipped — ...`. You never tear down, bring up or restart a shared stack project yourself (opmode-stack.sh, up.sh, compose) and never ask the owner about it. In a /stub run the runner never answers `stack` with an owner question either: it copies the stack's untracked settings into the stack checkout, hands a project the main checkout owns over to the stack checkout when that is safe, answers `repaired` only after proving the project owner and the env script's settings file, and otherwise ends the run itself with the status `STACK-ENV: stopped \u2014 <reason>`; a stack ownership or settings failure is never an owner question. A disk is never repaired automatically. A stale shared fake-llm fixture is the runner's: run tests through `run_tests.py --vm` (it rebuilds from the persistent checkout or skips the DB tests under `STACK-ENV: skipped`); never rebuild or restart a shared stack service from your worktree, and never ask the owner about it.
 - End each stage with its phase_checkpoint call and then, as the last line of your reply, `RUNNER: STAGE-DONE <stage name>`, and stop. The next stage starts in a new process with your checkpoints as its hand-off.
 - `RUNNER KEEPALIVE: ...` is the runner keeping the prompt cache warm while you wait: reply with exactly `OK` and do nothing else (no tool call, no RUNNER: line, no change to your plan).
 {claude_md}- End with `RUNNER: DONE` when /work-on is finished, and with `RUNNER: FAILED <why>` when you cannot go on. When the owner rules the dossier back to /plan (or the build shows it must be re-planned and the owner agreed), record the ruling and the inputs for the re-plan in the dossier, leave nothing half-built behind, and end with `RUNNER: REPLAN <why>`: the runner sets the dossier to planned and starts /plan itself. Never end such a run with FAILED.
@@ -945,6 +946,9 @@ def model_ok(expected: str, actual: str) -> bool:
 
 # a stage the agent ended with "duplicate run: <id> is already owned by the live run <key> ...; this run changed nothing",
 # or in its own words: "another live /plan session is already planning W-035 ...; this duplicate run stopped before any write"
+# A /stub run whose shared-stack ownership or settings could not be repaired (handle_stub_stack) ends `failed` with this head and
+# no owner question: the dashboard shows the exact reason as the run's status.
+STACK_ENV_STOP_RE = re.compile(r"^STACK-ENV: stopped\b")
 DUPLICATE_RUN_RE = re.compile(r"duplicate run\b[^\n]*\bchanged nothing|another live /?\w+ (?:session|run) is already (?:planning|building|fixing)\b[^\n]*\bduplicate run\b", re.I)
 TESTING_HUNG_MIN = 240      # a known test/CI wait is hung only after this many minutes (ASD_TESTING_HUNG_MIN), not the plain stall limit
 TESTING_QUIET_SECS = 300    # an in-flight Bash call with no output for longer than this counts as a long wait
@@ -1856,6 +1860,7 @@ class Runner:
 
     def spawn(self) -> tuple[queue.Queue, bool]:
         self.wrong_model = ""
+        self.stack_stop = ""   # a /stub run's shared-stack failure the runner could not repair: ends the run, never a question
         self.stray = 0
         self.ctx = 0
         self.split = None
@@ -2926,7 +2931,7 @@ class Runner:
 
     # -- the run ----------------------------------------------------------
 
-    def repair_env(self, why: str) -> dict:
+    def repair_env(self, why: str, verify=None) -> dict:
         """The standing repair (scripts/stack_repair.py): detect the VM and stack, repair what is down, within its
         bounds. Off unless ASD_STACK_REPAIR=1, except for a /stub run (on unless ASD_STACK_REPAIR=0). Never raises and
         never fails the run; returns {resource: outcome}."""
@@ -2942,7 +2947,7 @@ class Runner:
                 if not found:
                     break
                 self.event(f"environment ({why}): " + "; ".join(f"{k}: {v}" for k, v in found.items()))
-                res = stack_repair.repair(cfg, self.root, found, lambda t: self.event(t), command=self.command)
+                res = stack_repair.repair(cfg, self.root, found, lambda t: self.event(t), command=self.command, verify=verify)
                 out.update(res)
                 if not any(v.startswith("repaired") for v in res.values()):
                     break
@@ -2957,6 +2962,48 @@ class Runner:
                 "tests: do not run opmode-stack.sh, up.sh or any compose command yourself, run the rest of your tests "
                 "(`run_tests.py --vm` already skips the DB-backed ones), defer those criteria to the /stub full suite, and put "
                 f"`STACK-ENV: skipped \u2014 {why}` at the head of the PR note and in the build log. Carry on with the step you stopped at.")
+
+    def env_stop(self, why: str) -> str:
+        """A /stub run's stack ownership or settings problem the bounded repair did not fix: the run stops with the exact reason
+        (`STACK-ENV: stopped`, shown by the dashboard as the run's status). Never an owner question: handle_env's caller ends
+        the run itself, so this text only matters to a caller that does not."""
+        self.stack_stop = why
+        return (f"RUNNER ENV stack: the runner stops this run: {why}. This is not an owner question: do not ask the owner and do "
+                "not run opmode-stack.sh, up.sh or any compose command yourself.")
+
+    def handle_stub_stack(self, detail: str, n: int) -> str:
+        """`RUNNER: ENV stack <detail>` from a /stub session. The stack's untracked state is copied into the stack checkout,
+        the shared project is handed from the main checkout to it when needed (scripts/stack_env.py `handoff`: bounded,
+        free lease, the repo's own down then the bring-up), and `repaired` is answered only after `stack_env.verify` proves
+        it: the owner probe names the stack checkout and the env script's settings file exists. Else the run stops."""
+        cfg = stack_repair.load_config(self.root)
+        if not cfg:
+            return self.env_stop("no repair is configured for this repo (.agentic/stack-repair.json)")
+        if n > 4:
+            return self.env_stop(f"the stack was reported {n} times this stage and is still not usable")
+        if not stack_repair.enabled(self.command):
+            return self.env_stop("automatic repair is off (ASD_STACK_REPAIR=0), so the stack ownership cannot be fixed")
+        main, stack = stack_env.persistent_pair(self.root)
+        try:
+            if stack_checkout.is_stack_checkout(stack):
+                stack_checkout.sync_state(main, stack, stack_checkout.state_files_for(main))
+            h = stack_env.handoff(self.root, cfg, log=lambda t: self.event(t))
+        except Exception as e:  # noqa: BLE001 - never ends a run by itself
+            return self.env_stop(f"the stack hand-off crashed: {e!r}")
+        if h["state"] in ("skipped", "failed"):
+            return self.env_stop(f"hand-off of project {h['name']} to the stack checkout {h['state']}: {h['why']}")
+        if not re.search(r"foreign_project_state|leftover|suite_window_active|stack_lease_refused|owner=|settings|runtime\.env", detail, re.I):
+            res = self.repair_env("reported by the session", verify=lambda: stack_env.verify(self.root, cfg)).get("stack")
+            if res is not None and not res.startswith("repaired"):
+                return self.env_stop(f"the stack repair did not hold: {res}")
+        bad = stack_env.verify(self.root, cfg)
+        if bad:
+            return self.env_stop(bad)
+        if h["state"] == "none":
+            return ("RUNNER ENV stack: the shared project is not up any more and the stack checkout has its settings file; "
+                    "retry the step you stopped at once. If it refuses again, report it again.")
+        return ("RUNNER ENV stack: repaired by the runner and verified (the project owner is the stack checkout, its settings "
+                f"file exists{'; ' + h['why'] if h['state'] == 'handed' else ''}); carry on with the step you stopped at.")
 
     def handle_leftover(self, detail: str, n: int) -> str:
         """A bring-up refused because a compose project a suite left up is in the way (`foreign_project_state`): the runner
@@ -2999,7 +3046,10 @@ class Runner:
                     "`STACK-ENV: skipped` digest head, which you record in the build log and PR note. Never rebuild or restart "
                     "a shared stack service yourself.")
         # A dossier run never asks the owner about the shared stack (owner ruling 2026-11-19): what the runner cannot fix
-        # becomes a skip to the stub's full suite. A /stub run owns the stack and keeps asking, as before.
+        # becomes a skip to the stub's full suite. A /stub run owns the stack and never asks either (2026-11-27): the runner
+        # repairs ownership and settings itself and, when it cannot prove them, stops the run with a status.
+        if kind == "stack" and self.command == "stub":
+            return self.handle_stub_stack(detail, n)
         skip = kind == "stack" and self.command != "stub"
         def fail(why: str) -> str:
             return self.env_skip(why) if skip else f"RUNNER ENV {kind}: {why}; {ask}"
@@ -3155,7 +3205,12 @@ class Runner:
             if verb == "ENV":
                 # `RUNNER: ENV <vm|stack|disk> <detail>`: a broken environment, reported instead of asked about.
                 env_msgs += 1
-                self.send(self.handle_env(rest, env_msgs))
+                msg = self.handle_env(rest, env_msgs)
+                if self.stack_stop:
+                    kill_group(self.proc)
+                    self.end_process()
+                    return "failed", f"STACK-ENV: stopped \u2014 {self.stack_stop}"
+                self.send(msg)
                 quiet = True
                 continue
             if verb == "STAGE-DONE":
@@ -3538,6 +3593,10 @@ class Runner:
                 handed = self.hand_to_queue(detail)
                 if handed >= 0:
                     return handed
+            if STACK_ENV_STOP_RE.match(detail):
+                # A /stub run's stack ownership or settings problem that the bounded repair could not fix: the status says
+                # why; an owner question about the environment is exactly what the 2026-11-27 ruling removed.
+                return self.finish("failed", f"failed: {detail}", 1)
             if DUPLICATE_RUN_RE.match(detail):
                 # Another live run owns this dossier and this one changed nothing: an owner question is noise. End quietly.
                 return self.finish("failed", f"failed: {detail}", 1)
@@ -5745,6 +5804,21 @@ def selftest() -> int:
         check("repair detect: an unhealthy service", list(stack_repair.detect(cfg, root)) == ["stack"] and "nats unhealthy" in stack_repair.detect(cfg, root)["stack"])
         fake_reset(stack=healthy)
         check("repair detect: a healthy VM and stack", stack_repair.detect(cfg, root) == {})
+        real_det, real_run = stack_repair.detect, stack_repair._run
+        seq = {"n": 0}
+        def det_seq(_c, _r):
+            seq["n"] += 1
+            return {"stack": "x unhealthy"} if seq["n"] <= 1 else {}   # broken when looked at under the lock, healthy after up
+        stack_repair.detect, stack_repair._run = det_seq, lambda _a, _t: (0, "")
+        os.environ.pop("ASD_STACK_REPAIR", None)
+        vcfg = {"vm": "vt-verify", "stack_up": ["up"]}
+        r_bad = stack_repair.repair(vcfg, root, {"stack": "x unhealthy"}, rlog.append, command="stub", verify=lambda: "owner is /main, expected /main-stack")
+        seq["n"] = 0
+        vcfg["vm"] = "vt-verify2"
+        r_ok = stack_repair.repair(vcfg, root, {"stack": "x unhealthy"}, rlog.append, command="stub", verify=lambda: "")
+        stack_repair.detect, stack_repair._run = real_det, real_run
+        check("repair verify: up exits 0 and compose is healthy but the post-check fails -> `failed: not verified`, never `repaired`",
+              r_bad["stack"].startswith("failed: not verified") and "expected /main-stack" in r_bad["stack"] and r_ok["stack"] == "repaired")
         fake_reset("Stopped")
         check("repair gate: off unless ASD_STACK_REPAIR=1, nothing is run",
               not stack_repair.enabled() and stack_repair.repair(cfg, root, {"vm": "x"}, rlog.append) == {"vm": "off"} and calls() == [])
@@ -5817,6 +5891,14 @@ def selftest() -> int:
               rc == 0 and len([c for c in calls() if c.startswith("up")]) == 1
               and any(m.startswith("RUNNER ENV stack: repaired") for m in msgs(1)) and any(m.startswith("RUNNER ENV disk: the runner does not repair") for m in msgs(1)))
 
+        fake_reset(stack=healthy)
+        scenario([{"turns": [[{"final": "RUNNER: ENV stack no stack settings file at /x"}], [{"final": "RUNNER: DONE"}]]}])
+        rc = start("W-15", "--command", "stub").wait(timeout=60)
+        tl15 = [x.get("text", "") for x in lines_of(os.path.join(rdir, "repo.W-15.jsonl"))]
+        check("repair run /stub: a stack settings failure the repair cannot prove ends the run `failed` with STACK-ENV: stopped, no owner question",
+              rc == 1 and state_of("W-15").get("state") == "failed" and any("STACK-ENV: stopped" in t for t in tl15)
+              and not [f for f in os.listdir(qdir) if f.startswith("repo.W-15.")])
+
         # ---- the ENV stack path of a dossier run never ends in an owner question (handle_env, fakes only) ----
         def env_runner(command: str):
             r = object.__new__(Runner)
@@ -5850,13 +5932,54 @@ def selftest() -> int:
         a = env_runner("work-on").handle_env("stack nats unhealthy", 1)
         check("env stack: repair off for a dossier run now skips to the stub instead of asking",
               "STACK-ENV: skipped" in a and "Ask the owner" not in a)
-        env_stub = env_runner("stub").handle_env("stack nats unhealthy", 1)
-        check("env stack: a /stub run keeps its behaviour (repair on by default, never the skip)",
-              "STACK-ENV: skipped" not in env_stub)
+        # a /stub run: the runner copies state, hands the project over, proves it, else stops the run; never a question
+        real_ho, real_vf, real_isc, real_pair = stack_env.handoff, stack_env.verify, stack_checkout.is_stack_checkout, stack_env.persistent_pair
+        stack_checkout.is_stack_checkout = lambda _t: False
+        stack_env.persistent_pair = lambda r: (r, r + "-stack")
+        hres = {"state": "handed", "name": "proj-w1", "owner": "/s", "why": "owner /main -> /s"}
+        stack_env.handoff = lambda root_, cfg_, run=None, log=None: dict(hres)
+        vres = {"bad": ""}
+        stack_env.verify = lambda root_, cfg_, run=None: vres["bad"]
+        os.environ.pop("ASD_STACK_REPAIR", None)
+        stack_cfg = stack_repair.load_config(root)
+        er = env_runner("stub")
+        er.stack_stop = ""
+        a = er.handle_env("stack " + refusal, 1)
+        check("env stack /stub: handed over and verified -> `repaired ... verified`, no stop, no question",
+              a.startswith("RUNNER ENV stack: repaired by the runner and verified") and er.stack_stop == "" and "Ask the owner" not in a)
+        hres.update(state="skipped", why="another run holds the stack lease")
+        er = env_runner("stub"); er.stack_stop = ""
+        a = er.handle_env("stack " + refusal, 1)
+        check("env stack /stub: lease held -> the run stops with the reason, never an owner question",
+              "another run holds the stack lease" in er.stack_stop and "not an owner question" in a and "Ask the owner" not in a and "ask_owner" not in a)
+        hres.update(state="failed", why="after the bring-up the project owner is /main, expected /s")
+        er = env_runner("stub"); er.stack_stop = ""
+        a = er.handle_env("stack " + refusal, 1)
+        check("env stack /stub: the owner did not change -> stop with that reason, `repaired` is not said",
+              "expected /s" in er.stack_stop and "repaired by the runner" not in a)
+        hres.update(state="handed", why="x"); vres["bad"] = "project proj-w1 is owned by /main, not the stack checkout /s"
+        er = env_runner("stub"); er.stack_stop = ""
+        a = er.handle_env("stack nats unhealthy", 1)
+        check("env stack /stub: compose healthy is not proof: an owner the post-check rejects is a stop, not `repaired`",
+              "is owned by /main" in er.stack_stop and "repaired by the runner" not in a)
+        vres["bad"] = "the env script's settings file .runtime.env does not exist in the stack checkout /s"
+        er = env_runner("stub"); er.stack_stop = ""
+        a = er.handle_env("stack no stack settings file", 1)
+        check("env stack /stub: a missing settings file the copy could not fill is a stop with the exact reason",
+              "settings file" in er.stack_stop and "Ask the owner" not in a)
+        vres["bad"] = ""
         os.environ["ASD_STACK_REPAIR"] = "0"
-        env_stub = env_runner("stub").handle_env("stack nats unhealthy", 1)
-        check("env stack: a /stub run with repair off still asks the owner as before",
-              env_stub.startswith("RUNNER ENV stack: automatic repair is off") and "Ask the owner" in env_stub)
+        er = env_runner("stub"); er.stack_stop = ""
+        a = er.handle_env("stack nats unhealthy", 1)
+        check("env stack /stub: repair off is a stop with a status, no longer an owner question",
+              "automatic repair is off" in er.stack_stop and "Ask the owner" not in a)
+        os.environ["ASD_STACK_REPAIR"] = "1"
+        er = env_runner("stub"); er.stack_stop = ""
+        er.handle_env("stack " + refusal, 9)
+        check("env stack /stub: reported again and again is a stop", "reported 9 times" in er.stack_stop)
+        check("env stack /stub: the stop head is the one the run loop ends quietly on", bool(STACK_ENV_STOP_RE.match("STACK-ENV: stopped \u2014 x"))
+              and not STACK_ENV_STOP_RE.match("tests red"))
+        stack_env.handoff, stack_env.verify, stack_checkout.is_stack_checkout, stack_env.persistent_pair = real_ho, real_vf, real_isc, real_pair
         os.environ.pop("ASD_STACK_REPAIR")
         check("env disk: unchanged, left to the owner", "Ask the owner" in env_runner("work-on").handle_env("disk 1 GiB free", 1))
         check("env vm: unchanged for a dossier run, repair off asks the owner",

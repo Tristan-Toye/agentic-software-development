@@ -214,10 +214,14 @@ def _record(resource: str, now: float) -> None:
     os.replace(tmp, path)
 
 
-def repair(cfg: dict, root: str, resources: dict[str, str], log, wait_s: float = 1800, command: str = "") -> dict[str, str]:
+def repair(cfg: dict, root: str, resources: dict[str, str], log, wait_s: float = 1800, command: str = "",
+           verify=None) -> dict[str, str]:
     """Try to repair each broken resource. Returns {resource: outcome} where outcome starts with
     'repaired', 'failed', 'bound' (attempts used up) or 'no-command'; the caller asks the owner for any but 'repaired'.
-    Never called unless enabled(); `log(text)` records every action."""
+    Never called unless enabled(); `log(text)` records every action. `verify()` (a /stub run passes one) returns "" when
+    the stack is PROVEN usable for the checkout that will test, else the exact reason: 'repaired' is then claimed only
+    after it passes, because compose healthy says nothing about which checkout owns the project or whether the env
+    script's settings file exists."""
     results: dict[str, str] = {}
     if not enabled(command):
         return {r: "off" for r in resources}
@@ -230,6 +234,11 @@ def repair(cfg: dict, root: str, resources: dict[str, str], log, wait_s: float =
             if res not in resources:
                 continue
             if res not in still and not (res == "stack" and "vm" in still):
+                bad = verify() if verify and res == "stack" else ""
+                if bad:
+                    log(f"repair {res}: healthy, but not proven usable: {bad}")
+                    results[res] = f"failed: healthy but not verified: {bad}"
+                    continue
                 log(f"repair {res}: already healthy after waiting for the lock")
                 results[res] = "repaired: healthy when the lock was taken"
                 continue
@@ -252,10 +261,14 @@ def repair(cfg: dict, root: str, resources: dict[str, str], log, wait_s: float =
             log(f"repair {res} (attempt {len(used) + 1}/{MAX_PER_HOUR} this hour): {' '.join(argv)}")
             rc, out = _run(argv, 600 if res == "vm" else 1800)
             after = detect(cfg, root)
-            if rc == 0 and res not in after:
+            bad = verify() if (verify and res == "stack" and rc == 0 and res not in after) else ""
+            if rc == 0 and res not in after and not bad:
                 log(f"repair {res}: done")
                 results[res] = "repaired"
                 still = after
+            elif bad:
+                log(f"repair {res}: up exited 0 and compose is healthy, but not proven usable: {bad}")
+                results[res] = f"failed: not verified: {bad}"
             else:
                 tail = out.strip().splitlines()[-1][:160] if out.strip() else ""
                 log(f"repair {res}: failed (exit {rc}) {tail}")
