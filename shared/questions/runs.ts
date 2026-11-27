@@ -485,13 +485,21 @@ export async function pickDossiersByRepo(roots: string[], mainFor: (wt: string) 
  * dossier ids repeat across repos, and a question asked moments after its dossier was written must not be filed under
  * another repo's dossier of the same id. The only candidate is the answer only when `q.repo` is not a known repo.
  */
-export function questionRepo(q: { repo: string; dossier: string; root?: string }, runs: { repo: string; id: string; main: string; worktree: string }[]): string | undefined {
-  const c = runs.filter((r) => r.id === q.dossier)
+export function questionRepo(q: { repo: string; dossier: string; root?: string }, runs: { repo: string; id: string; main: string; worktree: string }[], byId?: Map<string, { repo: string; id: string; main: string; worktree: string }[]>, repos?: Set<string>): string | undefined {
+  // `byId` is `runs` grouped by dossier id (runsById): linkQuestions asks for every question, and a filter over all runs each time cost O(questions x runs) on the main thread.
+  const c = byId ? byId.get(q.dossier) ?? [] : runs.filter((r) => r.id === q.dossier)
   const inside = (p: string, d: string) => !!p && !!d && (p === d || p.startsWith(d + "/"))
   const hit = c.find((r) => r.repo === q.repo) ?? c.find((r) => inside(q.root ?? "", r.worktree) || inside(q.root ?? "", r.main))
   if (hit) return hit.repo
-  if (q.repo && runs.some((r) => r.repo === q.repo)) return q.repo
+  if (q.repo && (repos ? repos.has(q.repo) : runs.some((r) => r.repo === q.repo))) return q.repo
   return c.length === 1 ? c[0].repo : undefined
+}
+
+/** `runs` grouped by dossier id, each group in the order of `runs`. */
+export function runsById<T extends { id: string }>(runs: T[]): Map<string, T[]> {
+  const m = new Map<string, T[]>()
+  for (const r of runs) { const l = m.get(r.id); if (l) l.push(r); else m.set(r.id, [r]) }
+  return m
 }
 
 /** Whether a question was asked in the repo `repo` whose main checkout is `main` (named by `q.repo`, or its root is inside the checkout or a sibling worktree `<main>-...`). */
@@ -738,11 +746,12 @@ export function answeredBy(questions: Question[], inRepo: (q: Question) => boole
   const m = new Map<string, QA[]>()
   for (const q of questions) {
     if (q.state !== "answered" || !inRepo(q)) continue
-    const a: QA = { id: q.id, text: q.text, answer: q.answer?.text ?? "", option: q.answer?.option as string ?? "", asked: q.ts, answeredAt: q.answer?.ts ?? "" }
-    m.set(q.dossier, [...(m.get(q.dossier) ?? []), a])
+    const l = m.get(q.dossier)
+    if (l) l.push(qaOf(q)); else m.set(q.dossier, [qaOf(q)])
   }
   return m
 }
+const qaOf = (q: Question): QA => ({ id: q.id, text: q.text, answer: q.answer?.text ?? "", option: q.answer?.option as string ?? "", asked: q.ts, answeredAt: q.answer?.ts ?? "" })
 
 // ---- PR / CI ----
 const prCache = new Map<string, { at: number; pr: Pr | null }>()
@@ -897,12 +906,14 @@ export function linkQuestions(runs: Run[], questions: Question[]): Map<string, {
   const out = new Map<string, { open: string[]; answered: QA[] }>()
   const key = (repo: string, id: string) => `${repo}/${id}`
   for (const r of runs) out.set(key(r.repo, r.id), { open: [], answered: [] })
+  const byId = runsById(runs)
+  const repos = new Set(runs.map((r) => r.repo))
   for (const q of questions) {
-    const repo = questionRepo(q, runs)
+    const repo = questionRepo(q, runs, byId, repos)
     const slot = repo === undefined ? undefined : out.get(key(repo, q.dossier))
     if (!slot) continue
     if (q.state === "open") slot.open.push(q.id)
-    else for (const a of answeredBy([q]).get(q.dossier) ?? []) slot.answered.push(a)
+    else if (q.state === "answered") slot.answered.push(qaOf(q))
   }
   return out
 }
@@ -987,7 +998,9 @@ export async function getRuns(questions: () => Question[], opts: { fresh?: boole
     const qa = linked.get(`${r.repo}/${r.id}`)
     return { ...r, ...l, questions: qa?.open ?? [], answered: qa?.answered ?? [], view: viewFor(r.status, l.running, l.updates.length) }
   })
-  const statusOf = (repo: string) => (id: string) => live.find((x) => x.repo === repo && x.id === id)?.status
+  const statusBy = new Map<string, string>()   // first run of a (repo, id), as `find` gave it; a map, since controlsFor asks per blocker of every run
+  for (const x of live) { const k = `${x.repo}/${x.id}`; if (!statusBy.has(k)) statusBy.set(k, x.status) }
+  const statusOf = (repo: string) => (id: string) => statusBy.get(`${repo}/${id}`)
   // A pressed run button stays hidden while its run starts (pending.ts): the server-side marker outlives re-renders and tabs.
   const now = Date.now()
   // A dossier a live seed / plan-from-deferred run claimed is being planned there: no Start, the card names that run.

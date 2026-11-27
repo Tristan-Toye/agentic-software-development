@@ -27,7 +27,7 @@ import type { Note } from "./vrreview.ts"
 import { approveAll, buildAnswer, diagramsOf, dossierIntent, MAX_BODY, MAX_FEEDBACK_BODY, ReviewError, isReviewQuestion, readReview, reviewOptions, reviewState, setVerdict, submitFeedback } from "./vrreview.ts"
 import { collapsedDiagram, DiagramError, mapStatus, openDiagram } from "./vrmap.ts"
 import { askAgent, type DmDeps } from "./dmagent.ts"
-import { listChats, readChat, say } from "./pagechat.ts"
+import { listChatsAsync, readChat, say } from "./pagechat.ts"
 import { awakeDeps, checkAwakeAsync, releaseAwake } from "./awake.ts"
 import { slotsReading } from "./slots.ts"
 import { checkDisk, diskDeps, diskReading, sweepDisk } from "./disk.ts"
@@ -471,7 +471,7 @@ export async function handle(req: Request): Promise<Response> {
   if (req.method === "GET" && gr) return new Response(null, { status: 302, headers: { location: `/repo/${gr[1]}` } })
   if (req.method === "GET" && (path === "/" || path === "/questions" || /^\/chat(\/[a-z0-9]+)?$/.test(path) || /^\/repo\/[\w.-]+(\/.*)?$/.test(path))) return html(PAGE)
   // The dashboard chat (pagechat.ts): the Slack DM agent, with this page as its channel.
-  if (req.method === "GET" && path === "/api/chat") return json({ enabled: DM_AGENT, chats: listChats() })
+  if (req.method === "GET" && path === "/api/chat") return json({ enabled: DM_AGENT, chats: await listChatsAsync() })
   const cg = path.match(/^\/api\/chat\/([a-z0-9]{6,40})$/)
   if (req.method === "GET" && cg) {
     const c = readChat(cg[1])
