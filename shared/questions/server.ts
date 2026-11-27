@@ -2,7 +2,7 @@
 // Contract: references/owner-questions.md
 import { planningRunsAsync } from "./planning.ts"
 import { appendFileSync, existsSync, mkdirSync, openSync, readdirSync, statSync, watch, writeFileSync } from "node:fs"
-import { AnsweredError, appendOwner, idForThread, readAll, readAllAsync, readQuestion, readSidecarAsync, readSidecar, storeDir, writeSidecar, type Line, type Question } from "./store.ts"
+import { AnsweredError, appendOwner, idForThread, readAll, readAllAsync, readOpenAsync, readQuestion, readQuestionAsync, readSidecarAsync, readSidecar, storeDir, writeSidecar, type Line, type Question } from "./store.ts"
 import { PAGE } from "./page.ts"
 import { addRuling, readRulings, removeRuling } from "./rulings.ts"
 import { sweepOf } from "./patternsweep.ts"
@@ -34,13 +34,13 @@ import { checkDisk, diskDeps, diskReading, sweepDisk } from "./disk.ts"
 import { checkDirtyMains, dirtyMainReading } from "./mainlock.ts"
 import { api, apiGet, channelNameFor, keychainAsync, pageLink, POINTER_TEXT, questionBlocks, runSocket, type OwnerAction } from "./slack.ts"
 import { agentCounts, openerBlocks, statusBlocks, type StatusRun } from "./runstatus.ts"
-import { readAccounts, usageDir } from "./accounts.ts"
+import { readAccounts, readAccountsAsync, usageDir } from "./accounts.ts"
 import { mergeDetectorEnabled, nextMerges, readMergeSeen, writeMergeSeen, type MergedPr } from "./merges.ts"
 import { sh } from "./runs.ts"
 import { enableScanWorker } from "./scanpool.ts"
-import { flowViews, setFlow } from "./deliveryflows.ts"
+import { flowViewsAsync, setFlow } from "./deliveryflows.ts"
 import { trustViews } from "./trustreport.ts"
-import { argvFor, buildFacts, markMerged, runAutoWork, tickAutoWork, viewsFor } from "./autowork.ts"
+import { argvFor, buildFacts, factsOnAsync, markMerged, runAutoWork, tickAutoWork, viewsFor, viewsForAsync } from "./autowork.ts"
 import { logBlock } from "../claude/permission-denied.ts"
 
 const DIR = storeDir()
@@ -175,7 +175,12 @@ export async function scan(): Promise<void> {
   if (scanning) return void (again = true)
   scanning = true
   try {
-    for (const q of await readAllAsync(DIR)) {
+    // The open questions, plus the ones seen open that are not any more: their closing line still has to reach Slack.
+    // An answered question never seen open needs nothing (it would only be marked), so no answered file is re-read here.
+    const openNow = await readOpenAsync(DIR)
+    const openIds = new Set(openNow.map((q) => q.id))
+    const closing = (await Promise.all([...seen].filter(([id, s]) => !s.marked && !openIds.has(id)).map(([id]) => readQuestionAsync(DIR, id)))).filter((q): q is Question => q !== null)
+    for (const q of [...openNow, ...closing]) {
       const s = seen.get(q.id)
       if (!s) {
         const side = await readSidecarAsync(DIR, q.id)
@@ -429,7 +434,7 @@ function vrFeedback(run: Run): { notes: Note[]; viewed: string[] } {
 }
 /** The open product question of the visual review for this dossier (its options are Approved and Changes requested), or undefined. */
 async function vrQuestion(dossier: string, repo: string, runs: Run[]): Promise<Question | undefined> {
-  return (await readAllAsync(DIR)).find((q) => q.state === "open" && q.dossier === dossier && isReviewQuestion(q) && questionRepo(q, runs) === repo)
+  return (await readOpenAsync(DIR)).find((q) => q.state === "open" && q.dossier === dossier && isReviewQuestion(q) && questionRepo(q, runs) === repo)
 }
 
 /** Server-Sent Events: a `changed` event with the kinds that changed; a comment heartbeat keeps the stream open. */
@@ -492,7 +497,7 @@ export async function handle(req: Request): Promise<Response> {
   if (req.method === "GET" && path === "/api/runs") {
     // Live runs carry their agent counts (this stage); the accounts carry their windows and which runs use them.
     const v = await getRunsA()
-    const open = (await readAllAsync(DIR)).filter((q) => q.state === "open")
+    const open = await readOpenAsync(DIR)
     const openQs = new Set(open.map((q) => q.id))
     // A refusal counts as a blocker only while the run has an open question a ruling can answer.
     const asking = new Set(open.map((q) => `${questionRepo(q, v.runs)}.${q.dossier}`))
@@ -503,7 +508,7 @@ export async function handle(req: Request): Promise<Response> {
     const runs = merged
       .map((r) => ({ ...r, deferredUndecided: undecidedDeferred(r.deferred.items, r.runner?.command === "fix-deferred" && runnerActive(r.runner), openQs) }))
     const plans = await planRuns(runs)
-    const accounts = readAccounts([...runs.filter((r) => runnerActive(r.runner)).map((r) => ({ key: r.runKey || `${r.repo}.${r.id}`, account: r.runner?.account })), ...plans.map((p) => ({ key: p.key, account: p.account }))])
+    const accounts = await readAccountsAsync([...runs.filter((r) => runnerActive(r.runner)).map((r) => ({ key: r.runKey || `${r.repo}.${r.id}`, account: r.runner?.account })), ...plans.map((p) => ({ key: p.key, account: p.account }))])
     return json({ ...v, runs, plans, accounts, disk: diskReading(), dirtyMain: dirtyMainReading(), slots: slotsReading(), usageBusy: usageInflight, slack: slackOn(), pageId: PAGE_ID })
   }
   // The review packet (packet.ts): the JSON files of scripts/review_packet.py under .discovery/review-packet/<ID>/, read-only. The id is a
@@ -767,25 +772,25 @@ export async function handle(req: Request): Promise<Response> {
   // that /stub run. POST {repo, branch, action: integrate|stop|resume}.
   const ps = path.match(/^\/api\/pattern-sweep\/([\w.-]+)$/)
   if (req.method === "GET" && ps) return json(sweepOf(ps[1]))
-  if (req.method === "GET" && path === "/api/autowork") return json({ repos: viewsFor((await getRunsA()).runs) })
+  if (req.method === "GET" && path === "/api/autowork") return json({ repos: (await viewsForAsync((await getRunsA()).runs)) })
   if (req.method === "POST" && path === "/api/autowork") {
     const origin = req.headers.get("origin")
     if (origin && origin !== `http://${host}`) return json({ error: "bad origin" }, 403)
     const b = await req.json().catch(() => ({})) as { repo?: string; action?: string }
-    const v = viewsFor((await getRunsA(true)).runs).find((x) => x.repo === b.repo)
+    const v = (await viewsForAsync((await getRunsA(true)).runs)).find((x) => x.repo === b.repo)
     const argv = v ? argvFor(String(b.action), v.root) : null
     if (!v || !argv) return json({ error: "no such repository, or the action is not enable, disable, start-now or resume" }, v ? 400 : 404)
     const r = await runAutoWork(argv)
     emitChange("runs")
     return json({ ok: r.ok, output: r.output }, r.ok ? 200 : 409)
   }
-  if (req.method === "GET" && path === "/api/trust-report") return json({ repos: trustViews(viewsFor((await getRunsA()).runs).map((v) => v.repo)) })
-  if (req.method === "GET" && path === "/api/delivery-flows") return json({ repos: flowViews(viewsFor((await getRunsA()).runs).map((v) => v.repo)) })
+  if (req.method === "GET" && path === "/api/trust-report") return json({ repos: trustViews((await viewsForAsync((await getRunsA()).runs)).map((v) => v.repo)) })
+  if (req.method === "GET" && path === "/api/delivery-flows") return json({ repos: await flowViewsAsync((await viewsForAsync((await getRunsA()).runs)).map((v) => v.repo)) })
   if (req.method === "POST" && path === "/api/delivery-flows") {
     const origin = req.headers.get("origin")
     if (origin && origin !== `http://${host}`) return json({ error: "bad origin" }, 403)
     const b = await req.json().catch(() => ({})) as { repo?: string; flow?: string; on?: boolean }
-    if (!viewsFor((await getRunsA(true)).runs).some((x) => x.repo === b.repo)) return json({ error: "no such repository" }, 404)
+    if (!(await viewsForAsync((await getRunsA(true)).runs)).some((x) => x.repo === b.repo)) return json({ error: "no such repository" }, 404)
     const r = setFlow(String(b.repo), String(b.flow), b.on === true)
     if (r.ok) emitChange("runs")
     return json(r, r.ok ? 200 : 409)
@@ -839,7 +844,7 @@ export async function handle(req: Request): Promise<Response> {
     // The agent hears the ruling through its open question: an option-style answer, which the classifier reads as the
     // owner's own words naming the exact action.
     const rs = await allRuns()
-    const qs = (await readAllAsync(DIR)).filter((q) => q.dossier === run.id && questionRepo(q, rs) === run.repo && q.state === "open").sort((a, c) => c.ts.localeCompare(a.ts))
+    const qs = (await readOpenAsync(DIR)).filter((q) => q.dossier === run.id && questionRepo(q, rs) === run.repo && q.state === "open").sort((a, c) => c.ts.localeCompare(a.ts))
     const q = qs[0]
     const what = b.tool === "Bash" ? `this exact command: \`${b.target}\`` : `${b.tool} on \`${b.target}\``
     let rule = ""
@@ -1081,7 +1086,7 @@ export async function handle(req: Request): Promise<Response> {
     try { return new Response(dossierPage(run.id, run.repo, await readDossierAsync(run.file)), { headers: { "content-type": "text/html; charset=utf-8" } }) } catch { return json({ error: "dossier unreadable" }, 404) }
   }
   if (req.method === "GET" && path === "/api/questions") {
-    const all = url.searchParams.get("state") === "open" ? (await readAllAsync(DIR)).filter((q) => q.state === "open") : await readAllAsync(DIR)
+    const all = url.searchParams.get("state") === "open" ? await readOpenAsync(DIR) : await readAllAsync(DIR)
     return json(all)
   }
   const m = path.match(/^\/api\/questions\/([\w.-]+)(\/messages)?$/)
@@ -1355,7 +1360,8 @@ async function main(): Promise<void> {
       return { ...s, canIntegrate: canIntegrate(s.state, readIntegrate(key), readRunner(key)) }
     }) }))
     for (const r of stubs) for (const x of r.stubs) if (x.state === "merged" && markMerged(`${r.repo}.${x.branch.replace(/\//g, "-")}`)) emitChange("stubs")
-    tickAutoWork(buildFacts(runs, stubs))
+    const onFacts = new Set((await Promise.all([...new Set(runs.map((r) => r.repo))].map(async (r) => ((await factsOnAsync(r)) ? r : null)))).filter((r): r is string => r !== null))
+    tickAutoWork(buildFacts(runs, stubs, (r) => onFacts.has(r)))
   } catch { /* the next tick tries again */ } }
   setTimeout(reviveQueues, 5_000)
   setInterval(reviveQueues, 120_000)

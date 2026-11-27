@@ -27,6 +27,23 @@ export async function fileSig(path: string): Promise<string | null> {
   } catch { return null }
 }
 
+const jsonCache = new Map<string, { sig: string; value: any }>()
+/**
+ * The file's parsed JSON, or null when it is missing or unreadable (never a throw), read off the main thread and kept
+ * until the file's size or mtime changes. The async twin of the small sync `readJson`s on the request paths.
+ */
+export async function readJsonAsync(path: string): Promise<any> {
+  const sig = await fileSig(path)
+  if (sig === null) { jsonCache.delete(path); return null }
+  const hit = jsonCache.get(path)
+  if (hit && hit.sig === sig) return hit.value
+  const text = await readText(path)
+  let value: any = null
+  try { value = text === null ? null : JSON.parse(text) } catch { value = null }
+  if (text !== null) jsonCache.set(path, { sig, value })
+  return value
+}
+
 /** The file's text, or null when it cannot be read. */
 export async function readText(path: string): Promise<string | null> {
   try { return await readFile(path, "utf8") } catch { return null }

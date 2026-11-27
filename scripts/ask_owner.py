@@ -108,6 +108,51 @@ def write_line(path: str, obj: dict) -> None:
         os.close(fd)
 
 
+def index_note(qid: str, state: str) -> None:
+    """Tell the dashboard's open-question index (`open-index.json` next to the question files; format and lock protocol
+    in shared/questions/store.ts) that `qid` is `state` ("open" or "closed"). Best effort: a missing or unreadable index
+    is left for the server to rebuild, and the server finds any question the index lacks, so a miss never hides one."""
+    d = store_dir()
+    path = os.path.join(d, "open-index.json")
+    lock = os.path.join(d, "open-index.lock")
+    if not os.path.exists(path):
+        return
+    until = time.time() + 2.0
+    while True:
+        try:
+            os.close(os.open(lock, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644))
+            break
+        except FileExistsError:
+            try:
+                if time.time() - os.stat(lock).st_mtime > 10:
+                    os.unlink(lock)
+            except OSError:
+                pass
+        except OSError:
+            return
+        if time.time() > until:
+            return
+        time.sleep(0.005)
+    try:
+        with open(path, encoding="utf-8") as fh:
+            idx = json.load(fh)
+        if idx.get("v") != 1 or not isinstance(idx.get("open"), list) or not isinstance(idx.get("closed"), list):
+            return
+        idx = {"v": 1, "open": [x for x in idx["open"] if x != qid], "closed": [x for x in idx["closed"] if x != qid]}
+        idx["open" if state == "open" else "closed"].append(qid)
+        tmp = f"{path}.{os.getpid()}.tmp"
+        with open(tmp, "w", encoding="utf-8") as fh:
+            json.dump(idx, fh)
+        os.replace(tmp, path)
+    except (OSError, ValueError, AttributeError):
+        pass
+    finally:
+        try:
+            os.unlink(lock)
+        except OSError:
+            pass
+
+
 def read_lines(qid: str) -> list[dict]:
     p = path_of(qid)
     if not os.path.exists(p):
@@ -304,6 +349,7 @@ def cmd_ask(a: argparse.Namespace) -> int:
         finally:
             os.close(fd)
         break
+    index_note(qid, "open")
     print(qid)
     build_log(a.build_log, f"QUESTION: {qid} — {' '.join(a.question.split())[:240]}")
     return 0
@@ -349,6 +395,7 @@ def cmd_accept(a: argparse.Namespace) -> int:
         return 1
     write_line(path_of(a.id), {"ts": now(), "from": "agent", "kind": "answer", "accepted": True,
                                "text": clip(a.text), "owner_text": clip(str(owner[-1].get("text", "")))})
+    index_note(a.id, "closed")
     build_log(a.build_log, f"OWNER-RULING ({today()}): {a.id} — {' '.join(a.text.split())[:300]}")
     return 0
 

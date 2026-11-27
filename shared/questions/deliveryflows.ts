@@ -3,6 +3,7 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs"
 import { homedir } from "node:os"
 import { dirname, join } from "node:path"
+import { readJsonAsync } from "./asyncio.ts"
 
 export type Flows = { stub: boolean; kanban: boolean }
 export type FlowView = { repo: string } & Flows
@@ -21,6 +22,16 @@ export function flowsOf(repo: string, file = flowsFile()): Flows {
   const kanban = e?.kanban === true
   return { stub: e?.stub !== false || !kanban, kanban }
 }
+
+/** `flowsOf` with the file read off the main thread (cached by mtime): unreadable or not an object reads as the defaults. */
+export async function flowsOfAsync(repo: string, file = flowsFile()): Promise<Flows> {
+  const j = await readJsonAsync(file)
+  const e = j && typeof j === "object" && !Array.isArray(j) ? j[repo] : undefined
+  const kanban = e?.kanban === true
+  return { stub: e?.stub !== false || !kanban, kanban }
+}
+
+export const flowViewsAsync = async (repos: string[], file = flowsFile()): Promise<FlowView[]> => Promise.all(repos.map(async (repo) => ({ repo, ...(await flowsOfAsync(repo, file)) })))
 
 export const flowViews = (repos: string[], file = flowsFile()): FlowView[] => repos.map((repo) => ({ repo, ...flowsOf(repo, file) }))
 

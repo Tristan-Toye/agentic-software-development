@@ -488,6 +488,7 @@ def pause_question(st: dict) -> None:
         finally:
             os.close(fd)
         break
+    ask_owner.index_note(qid, "open")
     p["question"] = qid
 
 
@@ -514,6 +515,7 @@ def close_pause_question(p: dict, how: str) -> None:
     try:
         if ask_owner.final_answer(ask_owner.read_lines(q)) is None:
             ask_owner.write_line(ask_owner.path_of(q), {"ts": now(), "from": "agent", "kind": "answer", "accepted": True, "text": how})
+            ask_owner.index_note(q, "closed")
     except (SystemExit, OSError):
         pass
 

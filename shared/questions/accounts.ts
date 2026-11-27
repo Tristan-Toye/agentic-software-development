@@ -3,6 +3,7 @@
 import { readFileSync } from "node:fs"
 import { homedir } from "node:os"
 import { join } from "node:path"
+import { readJsonAsync } from "./asyncio.ts"
 
 export type Window = { usedPct: number | null; resetsAt: string; status: string }
 export type Account = {
@@ -34,9 +35,9 @@ export const usageDir = (): string => process.env.ASD_USAGE_DIR || join(home(), 
 const iso = (epochS: unknown): string => (typeof epochS === "number" && epochS > 0 ? new Date(epochS * 1000).toISOString() : "")
 
 /** The login of a config dir: `<dir>/.claude.json`, or `~/.claude.json` for the default `~/.claude`. */
-function login(dir: string): { email: string; org: string } {
-  const f = dir.replace(/\/$/, "") === join(home(), ".claude") ? join(home(), ".claude.json") : join(dir, ".claude.json")
-  const o = readJson(f)?.oauthAccount ?? {}
+const loginFile = (dir: string): string => (dir.replace(/\/$/, "") === join(home(), ".claude") ? join(home(), ".claude.json") : join(dir, ".claude.json"))
+function login(dir: string, rj: (p: string) => any = readJson): { email: string; org: string } {
+  const o = rj(loginFile(dir))?.oauthAccount ?? {}
   return { email: String(o.emailAddress ?? ""), org: String(o.organizationName ?? "") }
 }
 function windowOf(w: any, now: number): Window | null {
@@ -52,13 +53,31 @@ function windowOf(w: any, now: number): Window | null {
  * the one that frees first, as `pick_account` in run_dossier.py), its windows and the live runs on it.
  */
 export function readAccounts(liveRuns: { key: string; account?: string }[], now = Date.now()): Account[] {
-  const list: { name: string; dir: string; email?: string }[] = (readJson(accountsFile())?.accounts ?? []).filter((a: any) => a?.name && a?.dir).map((a: any) => ({ name: String(a.name), dir: expand(String(a.dir)), ...(a.email ? { email: String(a.email) } : {}) }))
+  return buildAccounts(liveRuns, now, readJson)
+}
+
+/** `readAccounts` with every JSON file read off the main thread (cached by mtime): the request path's version. */
+export async function readAccountsAsync(liveRuns: { key: string; account?: string }[], now = Date.now()): Promise<Account[]> {
+  const files = new Map<string, any>()
+  const load = async (paths: string[]) => { await Promise.all(paths.map(async (p) => { files.set(p, await readJsonAsync(p)) })) }
+  await load([accountsFile(), accountStateFile()])
+  const names = accountList(files.get(accountsFile()))
+  const accs = names.length ? names : [{ name: "default", dir: join(home(), ".claude") }]
+  await load(accs.flatMap((a) => [join(usageDir(), `${a.name}.json`), loginFile(a.dir)]))
+  return buildAccounts(liveRuns, now, (p) => files.get(p) ?? null)
+}
+
+type Reg = { name: string; dir: string; email?: string }
+const accountList = (reg: any): Reg[] => (reg?.accounts ?? []).filter((a: any) => a?.name && a?.dir).map((a: any) => ({ name: String(a.name), dir: expand(String(a.dir)), ...(a.email ? { email: String(a.email) } : {}) }))
+
+function buildAccounts(liveRuns: { key: string; account?: string }[], now: number, rj: (p: string) => any): Account[] {
+  const list = accountList(rj(accountsFile()))
   const accs: { name: string; dir: string; email?: string }[] = list.length ? list : [{ name: "default", dir: join(home(), ".claude") }]
-  const st = readJson(accountStateFile()) ?? {}
-  const usage = (n: string): any => readJson(join(usageDir(), `${n}.json`)) ?? {}
+  const st = rj(accountStateFile()) ?? {}
+  const usage = (n: string): any => rj(join(usageDir(), `${n}.json`)) ?? {}
   const freeAt = (n: string): number => (limitSuperseded(st?.[n], usage(n)) ? 0 : Number(st?.[n]?.limited_until ?? 0) * 1000)
   const usable = accs.find((a) => freeAt(a.name) <= now) ?? [...accs].sort((a, b) => freeAt(a.name) - freeAt(b.name))[0]
-  const logins = new Map(accs.map((a) => [a.name, login(a.dir)]))
+  const logins = new Map(accs.map((a) => [a.name, login(a.dir, rj)]))
   return accs.map((a) => {
     const u = usage(a.name)
     const lim = freeAt(a.name)
