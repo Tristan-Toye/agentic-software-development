@@ -429,10 +429,9 @@ the recorded checkpoints.
   session back-links with `FOLLOW-UP-PLANNED: <key> → <new ID>` (or
   `FOLLOW-UP-COVERED: <key> → <ID>`) in the parent, and
   `FOLLOW-UP-SOURCE: <parent> <key>` in the new dossier; runs.ts links them
-  as it does `DEFERRED-DOSSIER`. The dashboard repo page and Deferred tab list
-  every ruled follow-up without a dossier, including the legacy free-text
-  forms (`FOLLOW-UP-DOSSIER-n`, `FOLLOW-UP-IDEA`, `DEFERRED-SCOPE`, an
-  `OWNER-RULING` saying own dossier), read-only.
+  as it does `DEFERRED-DOSSIER`. The dashboard has no follow-up list: every
+  ruled follow-up gets its /plan run, so none is left without a dossier (the
+  `/api/runs` payload still carries `followUps` for the auto work tick).
 - **`seed-<slug> --command plan --seed FILE`:** a free-form `/plan` (a
   description, no dossier and no deferred item yet). The id is a slug,
   `seed-<lowercase words>`, so the key is `<repo>.seed-<slug>`. The runner
