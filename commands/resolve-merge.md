@@ -3,7 +3,8 @@ description: >-
   Bring a dossier's pull requests up to date with the stub they merge into
   when they conflict: merge the base into each conflicting branch, resolve
   every conflict keeping both sides' intent, prove it with the affected tests
-  and gates, push. Never merges into the stub, rebases or force-pushes.
+  and gates, push (the stub's own PR through an auto-merging sync PR). Never
+  pushes to the stub, rebases or force-pushes.
   Started by the dashboard's merge queue.
 argument-hint: "<dossier ID, e.g. W-128> <PR numbers, bottom to top, e.g. 427,429>"
 ---
@@ -145,7 +146,7 @@ Note the commit you started the merge on (`before=$(git rev-parse HEAD)`, taken 
 not happen, usually a hook (lefthook) refused it: read the output of `git commit`, fix what it names, commit again, and re-run the check. A hook failure is never skipped: no `--no-verify`, and no owner question asking to allow it. An error that looks platform-only (a Linux-only module on macOS, E0432) is a defect like any other, often an attribute such as `#[cfg(target_os = "linux")]` that a merge or an inserted line moved off the item it gated: compare the file with the base (`git diff <base> -- <file>`) and put it back. Say "the
 merge is committed" only after exit 0. A MERGE_HEAD, staged files or a `.git/index.lock` in a worktree this session created is its own unfinished
 merge, never "a second process changing the worktree": call it another process only when `ps` or a lock file names one (a live pid), and never ask
-the owner about your own pending merge. Then `git push` (never `--force`). Check each pull request reads
+the owner about your own pending merge. Then `git push` (never `--force`), except for the stub's own pull request (next paragraph). Check each pull request reads
 `MERGEABLE` (`gh pr view <n> --json mergeable`; GitHub may need a minute).
 Then wait for each pushed pull request's CI, bottom first, in one call each:
 `python3 ${PLUGIN_ROOT}/scripts/wait_ci.py --pr <n>`. Do not end while it is
@@ -157,10 +158,33 @@ the note. Remove the worktrees. Post one note: which pull requests conflicted, i
 files, how each was resolved, and the test and gate results. Under the runner,
 end with `RUNNER: DONE`; the merge queue merges next.
 
+### The stub's own pull request
+
+When the head branch is the stub itself (the stub's pull request into
+development, whose head is `stub/<date>`), the stub's branch rule refuses a
+direct push (GH013: changes must go through a pull request). That refusal is
+expected, never an owner question. Land it in one call, from the worktree that
+holds the committed merge:
+`python3 ${PLUGIN_ROOT}/scripts/stub_sync_pr.py --root <worktree> --stub <stub> --body-file <note>`
+(the note: the conflicted files and how each was resolved, the test and gate
+results). It pushes HEAD to a side branch `sync/<stub-with-dashes>-<YYYY-MM-DD>`
+(never `--force`), opens the pull request into the stub titled `Sync <stub>
+with development` (or reuses the open one), turns on auto-merge with a merge
+commit (never squash or rebase, so the stub PR's conflict goes away) and waits
+for its CI; it is safe to run again. Its last line is `SYNC-PR: #<n> <url>
+auto-merge=<on|off> ci=<green|red|pending|skipped>`; when the checks pass
+GitHub merges it and the stub's pull request picks the merge up. Do not run
+these steps by hand. A red check (exit 1, `ci=red`) is fixed with a new commit in the same worktree, then the same call again. When it reports
+`auto-merge=off` (the repository's `allow_auto_merge` is off), leave the pull request open,
+say so in one line of the note, and end: the owner merges it. The owner answered
+this once (config-harness Q12, 2026-11-28); never ask it again.
+
 ## Rules
 
 - Never merge, approve or close a pull request, never push to the stub, never
-  rebase, never `--force`.
+  rebase, never `--force`. The one merge you start is the auto-merge of your
+  own sync pull request into the stub (Step 4), which GitHub performs only
+  after the required checks pass.
 - Never change code outside the conflicted hunks, except a test or gate fix
   the merge itself made necessary.
 - Never resolve by taking one side wholesale (`-X ours`, `-X theirs`,

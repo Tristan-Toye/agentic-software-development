@@ -217,7 +217,9 @@ and you name them in the report instead of asking;
 and whether `origin/development` moved past the cut point. It may have —
 development merges the ADR index and other stubs. When it did, state the
 divergence and merge `origin/development` into the stub **as a pull request
-into the stub**, never a direct push, before anything else runs. A conflicted
+into the stub**, never a direct push, before anything else runs: a side branch
+and a sync pull request with auto-merge on, as `/resolve-merge` Step 4 "The
+stub's own pull request" says (one call: `stub_sync_pr.py --root <worktree> --stub <stub>`), with no owner question. A conflicted
 sync is resolved as `/resolve-merge` Step 2 says, and `python3 ${PLUGIN_ROOT}/scripts/merge_guard.py`
 must exit 0 before the merge is committed.
 
