@@ -41,6 +41,8 @@ Usage:
     driver_modes.py off                       every driver off (rollback)
     driver_modes.py limit N                   only the next N /work-on runs carry the modes
                                               (starts a fresh count; the claimed runs are listed by show)
+    driver_modes.py limit N --per-repo        the next N /work-on runs of EACH repo carry the modes
+                                              (the repo is the run key's part before its first dot)
     driver_modes.py limit none                no quota: every run carries the modes
     driver_modes.py --file PATH ...           another file than the default
     driver_modes.py --selftest
@@ -143,12 +145,29 @@ def resolve(environ: dict, path: str | None = None) -> tuple[dict[str, str], dic
 
 
 def _quota_of(raw: object) -> dict | None:
-    """The valid quota of a parsed file, or None: {"limit": int >= 0, "claimed": [{"run": str, "at": str}, ...]}."""
+    """The valid quota of a parsed file, or None: {"limit": int >= 0, "claimed": [{"run": str, "at": str}, ...]},
+    plus "per_repo": True when the limit counts each repo's runs on their own."""
     q = raw.get(QUOTA_KEY) if isinstance(raw, dict) else None
     if not isinstance(q, dict) or isinstance(q.get("limit"), bool) or not isinstance(q.get("limit"), int) or q["limit"] < 0:
         return None
     claimed = [c for c in (q.get("claimed") or []) if isinstance(c, dict) and isinstance(c.get("run"), str)]
-    return {"limit": q["limit"], "claimed": claimed}
+    out = {"limit": q["limit"], "claimed": claimed}
+    if q.get("per_repo") is True:
+        out["per_repo"] = True
+    return out
+
+
+def repo_of(run_key: str) -> str:
+    """The repo of a run key ("podcast-generation-engine.W-037" -> "podcast-generation-engine")."""
+    return run_key.split(".", 1)[0]
+
+
+def used_by(quota: dict, run_key: str) -> int:
+    """The places that count against run_key's limit: all of them, or only its repo's under per_repo."""
+    if not quota.get("per_repo"):
+        return len(quota["claimed"])
+    repo = repo_of(run_key)
+    return sum(1 for c in quota["claimed"] if repo_of(c["run"]) == repo)
 
 
 def load_quota(path: str | None = None) -> dict | None:
@@ -205,7 +224,7 @@ def claim(run_key: str, path: str | None = None) -> bool:
             return True
         if any(c["run"] == run_key for c in quota["claimed"]):
             return True
-        if len(quota["claimed"]) >= quota["limit"]:
+        if used_by(quota, run_key) >= quota["limit"]:
             return False
         quota["claimed"].append({"run": run_key, "at": time.strftime("%Y-%m-%dT%H:%M:%S%z")})
         write(path, modes, quota)
@@ -247,8 +266,14 @@ def show(path: str) -> str:
     if quota is None:
         rows.append("  quota: none (every run carries the modes)")
     else:
-        used = len(quota["claimed"])
-        rows.append(f"  quota: {used} of {quota['limit']} used" + (" (used up: new runs get every driver off)" if used >= quota["limit"] else ""))
+        if quota.get("per_repo"):
+            repos: dict[str, int] = {}
+            for c in quota["claimed"]:
+                repos[repo_of(c["run"])] = repos.get(repo_of(c["run"]), 0) + 1
+            rows.append(f"  quota: {quota['limit']} per repo" + ("".join(f"; {r} {n} of {quota['limit']} used" + (" (used up)" if n >= quota["limit"] else "") for r, n in sorted(repos.items())) or "; none used"))
+        else:
+            used = len(quota["claimed"])
+            rows.append(f"  quota: {used} of {quota['limit']} used" + (" (used up: new runs get every driver off)" if used >= quota["limit"] else ""))
         for c in quota["claimed"]:
             rows.append(f"    {c['run']}  {c.get('at', '')}")
     for w in warnings:
@@ -272,6 +297,7 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("off", help="every driver off")
     p_limit = sub.add_parser("limit", help="only the next N /work-on runs carry the modes; 'none' clears the quota")
     p_limit.add_argument("count", metavar="N|none")
+    p_limit.add_argument("--per-repo", action="store_true", help="N places for each repo instead of N in all")
     a = ap.parse_args(argv)
     if a.selftest:
         return selftest()
@@ -287,7 +313,10 @@ def main(argv: list[str] | None = None) -> int:
         try:
             with locked(path):
                 modes, _ = load(path)
-                write(path, modes, None if c == "none" else {"limit": int(c), "claimed": []})
+                quota = None if c == "none" else {"limit": int(c), "claimed": []}
+                if quota is not None and a.per_repo:
+                    quota["per_repo"] = True
+                write(path, modes, quota)
         except OSError as err:
             print(f"driver_modes.py: cannot write {path}: {err}", file=sys.stderr)
             return 2
@@ -434,6 +463,10 @@ def _run_selftest() -> list[str]:
             check("limit N starts a fresh count", main(["--file", q, "limit", "3"]) == 0 and load_quota(q) == {"limit": 3, "claimed": []})
             check("a bad limit is refused", main(["--file", q, "limit", "many"]) == 2 and main(["--file", q, "limit", "-1"]) == 2 and (load_quota(q) or {})["limit"] == 3)
             check("limit none clears the quota", main(["--file", q, "limit", "none"]) == 0 and load_quota(q) is None and QUOTA_KEY not in json.load(open(q)))
+            check("limit 2 --per-repo stores per_repo", main(["--file", q, "limit", "2", "--per-repo"]) == 0 and load_quota(q) == {"limit": 2, "claimed": [], "per_repo": True})
+            check("per repo: each repo gets its own 2 places", claim("a.W-1", q) and claim("a.W-2", q) and not claim("a.W-3", q) and claim("b.W-1", q) and claim("b.stub-x.resolve-1", q) and not claim("b.W-9", q))
+            check("per repo: show lists each repo", "a 2 of 2 used (used up)" in show(q) and "b 2 of 2 used (used up)" in show(q))
+            check("plain limit after per-repo drops per_repo", main(["--file", q, "limit", "1"]) == 0 and load_quota(q) == {"limit": 1, "claimed": []})
             with open(q, "w") as fh:
                 fh.write('{"test_round": "shadow"}')
             check("an old file with only modes still reads", load(q) == ({"test_round": "shadow"}, []) and load_quota(q) is None)

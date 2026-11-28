@@ -52,6 +52,7 @@ Token cost: a driver costs tokens on every run that carries it, so cap it with a
 switch on for everyone:
 
     python3 $S/driver_modes.py limit 3        # only the next 3 /work-on runs carry the modes
+    python3 $S/driver_modes.py limit 3 --per-repo   # or: the next 3 /work-on runs of EACH repo
     python3 $S/driver_modes.py limit none     # no quota again
 
 Each fresh `/work-on` run that starts claims one place (its run key goes in the file, under a lock, so thirty runs
