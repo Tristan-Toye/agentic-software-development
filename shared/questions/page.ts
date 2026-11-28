@@ -89,7 +89,7 @@ ol.tl>li.boundary{margin:20px 0 14px}ol.tl>li.boundary::before{display:none}
 .agrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:10px}.acard{border:1px solid var(--bd);border-radius:12px;background:var(--card);padding:12px 14px;display:flex;flex-direction:column;gap:8px}.acard.next{border-color:var(--acc)}
 .ahd{display:flex;align-items:center;gap:6px;flex-wrap:wrap}.aname{font-weight:700;font-size:1rem;margin-right:4px}.meter .mhd{display:flex;justify-content:space-between;font-size:12.5px}.meter .ml{color:var(--mut)}.meter .mv{font-weight:600}
 .mbar{height:7px;border-radius:4px;background:var(--chip);overflow:hidden;margin:3px 0}.mfill{display:block;height:100%;background:var(--acc)}.mfill.ok{background:var(--ok)}.mfill.warn{background:var(--warn)}.mfill.bad{background:var(--bad)}
-.qchat{display:flex;flex-direction:column;gap:6px;margin:10px 0}.qchat .cm{max-width:88%;padding:7px 10px;border-radius:10px;border:1px solid var(--bd)}.qchat .cm.me{align-self:flex-end;background:var(--accbg)}.qchat .cm.them{align-self:flex-start}.qchat .cm .who{font-size:11px;color:var(--mut);margin-bottom:2px}.qchat .cm .tx{white-space:pre-wrap}.qchat .cm.wait{color:var(--mut);font-size:12px}.scard.clickable{cursor:pointer}.scard.clickable:hover{border-color:var(--acc)}.mergectl{display:inline-flex;gap:6px;align-items:center;flex-wrap:wrap}.dfplan{display:inline-flex;gap:6px;align-items:center;flex-wrap:wrap}.fuitem{margin:6px 0}.nowline{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:8px 0 0;color:var(--fg)}.nowline .nowtext{display:inline-flex;gap:6px;align-items:center;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.srow .nowline{margin:2px 0 0;color:var(--mut)}.nowline .chip{font-size:11px}.rsub{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.srow .sname>span:first-child{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.qchat{display:flex;flex-direction:column;gap:6px;margin:10px 0}.qchat .cm{max-width:88%;padding:7px 10px;border-radius:10px;border:1px solid var(--bd)}.qchat .cm.me{align-self:flex-end;background:var(--accbg)}.qchat .cm.them{align-self:flex-start}.qchat .cm .who{font-size:11px;color:var(--mut);margin-bottom:2px}.qchat .cm .tx{white-space:pre-wrap}.qchat .cm.wait{color:var(--mut);font-size:12px}.scard.clickable{cursor:pointer}.scard.clickable:hover{border-color:var(--acc)}.mergectl{display:inline-flex;gap:6px;align-items:center;flex-wrap:wrap}.dfplan{display:inline-flex;gap:6px;align-items:center;flex-wrap:wrap}.nowline{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:8px 0 0;color:var(--fg)}.nowline .nowtext{display:inline-flex;gap:6px;align-items:center;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.srow .nowline{margin:2px 0 0;color:var(--mut)}.nowline .chip{font-size:11px}.rsub{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.srow .sname>span:first-child{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .chip.fixing{display:inline-flex;align-items:center;gap:5px;background:var(--accbg);color:var(--acc);font-weight:600}.srow:has(.chip.fixing){box-shadow:inset 3px 0 0 var(--acc)}.chip.queued{display:inline-flex;align-items:center;gap:5px;background:var(--quebg);color:var(--que);font-weight:600}.dot.que{background:var(--que)}.srow:has(.chip.queued){box-shadow:inset 3px 0 0 var(--que)}
 .dfp{border-left:3px solid var(--acc)}.dfp-bar{display:flex;height:9px;border-radius:5px;overflow:hidden;background:var(--chip);margin:6px 0 4px}.dfp-bar .seg{display:block;height:100%}
 .seg.ok,.sw.ok{background:var(--ok)}.seg.acc,.sw.acc{background:var(--acc)}.seg.warn,.sw.warn{background:var(--warn)}.seg.mut,.sw.mut{background:var(--mut)}.seg.mut2,.sw.mut2{background:var(--bd)}
@@ -1307,31 +1307,6 @@ function stubTree(repo, s) {
     h('div', { class: 'shead' }, [h('a', { class: 'title mono', href: hrefStub(repo, s.branch) }, [s.branch]), h('span', { class: 'meta' }, ['cut ' + s.cut]), h('span', { class: 'chips' }, cs), h('span', { class: 'grow' }), integ]),
     groups.length ? h('div', { class: 'sgrps' }, groups) : h('div', { class: 'meta' }, ['Nothing in progress or merged yet.'])]);
 }
-/* Follow-up dossiers the owner ruled that have no dossier yet: the structured FOLLOW-UP-DOSSIER marker, a deferred item routed to its own
-   dossier, and the older free-text forms (read-only). The auto work tick plans them; this lists what is still open, and alarms a run that failed
-   three times or finished without a link. Nothing here can sit as a log line. */
-function fuChip(f) {
-  if (f.state === 'alarm') return chip('alarm · no dossier', 'blocked');
-  if (f.state === 'unlinked') return chip('plan finished · no link', 'warn');
-  if (f.state === 'failed') return chip('plan failed · retried ' + f.tries + '/3', 'warn');
-  if (f.state === 'planning') return chip('being planned', 'pending');
-  if (f.state === 'queued') return chip('plan queued', 'pending');
-  if (f.state === 'legacy') return chip('free text · not planned', 'warn');
-  return chip('no dossier · plan not started', 'warn');
-}
-function followUpList(list, withParent) {
-  return h('div', { class: 'fulist', 'data-k': 'fulist' }, list.map(f => h('div', { class: 'fuitem', 'data-k': 'fu:' + f.parent + ':' + f.key }, [
-    h('div', {}, [withParent ? h('a', { class: 'mono', href: hrefItem(f.repo || '', f.parent) }, [f.parent]) : null, withParent ? ' ' : null, h('span', { class: 'mono' }, [f.key]), ' ', fuChip(f), ' ', h('span', {}, [f.summary || f.line])]),
-    f.note ? h('div', { class: 'small mut' }, [f.note]) : null,
-    f.seed ? h('div', { class: 'small mut' }, [h('button', { class: 'btn sm', type: 'button', 'data-act': 'copy', 'data-text': f.seed.charAt(0) === '/' ? f.seed : '/plan ' + f.seed }, ['Copy the /plan seed'])]) : null])));
-}
-function repoFollowUps(repo) {
-  const all = []; S.runs.filter(r => r.repo === repo).forEach(r => (r.followUps || []).forEach(f => all.push(Object.assign({ repo: repo }, f))));
-  const seen = {}; const list = all.filter(f => { const k = f.parent + '|' + f.key; if (seen[k]) return false; seen[k] = 1; return true; });
-  if (!list.length) return null;
-  const bad = list.filter(f => f.state === 'alarm' || f.state === 'unlinked' || f.state === 'legacy').length;
-  return h('div', { class: 'scol-sec', 'data-k': 'fu:' + repo }, [h('h3', { title: 'Follow-up dossiers the owner ruled, with no dossier yet. With auto work on for this repo, the runner plans them by itself.' }, ['Follow-ups with no dossier · ' + list.length + (bad ? ' · ' + bad + ' need you' : '')]), followUpList(list, true)]);
-}
 function sideColumn(repo) {
   const rr = S.stubs.repos.find(x => x.repo === repo); const stubs = rr ? rr.stubs : []; const os = openStubs(repo);
   const placed = {}; stubs.forEach(s => (s.members || []).forEach(m => { placed[m.id] = 1; }));
@@ -1346,7 +1321,6 @@ function sideColumn(repo) {
   if (outs.length) kids.push(h('div', { class: 'scol-sec', 'data-k': 'outside:' + repo }, [h('h3', { title: 'Open PRs of a dossier whose base is not an open stub (development, a release, or stacked on one). Nothing merges them into a stub.' }, ['Outside any stub']),
     h('ul', { class: 'tree' }, outs.map(o => h('li', {}, [h('a', { class: 'sub-item', href: hrefItem(repo, o.id) }, [h('span', { class: 'sid mono' }, [o.id]), activityChip(findRun(repo, o.id))]),
       h('div', { class: 'small' }, o.prs.map(p => h('span', { style: 'margin-right:8px' }, [h('a', { href: p.url, target: '_blank', rel: 'noopener' }, ['#' + p.number]), ' → ' + p.base + ' ', p.mergeable === 'CONFLICTING' ? chip('⚠ CONFLICTING', 'blocked') : null])))])))]));
-  const fup = repoFollowUps(repo); if (fup) kids.push(fup);
   // Dossiers on an open stub card show their deferred count there; this lists the rest (their stub merged).
   const onCard = {}; os.forEach(s => { (s.members || []).forEach(m => { onCard[m.id] = 1; }); s.dossiers.forEach(d => { onCard[d.id] = 1; }); });
   (rr && rr.outside ? rr.outside : []).forEach(o => { onCard[o.id] = 1; });
@@ -1620,7 +1594,6 @@ PANES.push(
       h('div', { class: 'panel qa' }, [h('div', {}, ['Q: ' + a.text]), h('div', { class: 'a' }, ['A: ' + (a.option ? a.option + ' · ' : '') + a.answer + ' · ', when(a.answeredAt || a.asked)]), h('a', { class: 'small', href: '/questions#q=' + enc(a.id) }, ['thread'])])])) },
   c => { const dp = deferredProgress(c.r, c.d); return dp ? { key: 'deferredprog', title: 'Fix run for the deferred issues', badge: fixLive(c.r) ? { text: 'running', tone: 'info' } : null, def: paneDefault('deferredprog', c.pd), cls: 'flat', body: () => [dp] } : null; },
   c => c.nDf ? { key: 'deferred', fb: 'pane:deferred', title: 'Deferred issues', badge: { text: c.r.deferredOpen + ' open / ' + c.nDf, tone: c.r.deferredOpen ? 'warn' : 'neutral' }, def: paneDefault('deferred', c.pd), cls: 'flat', body: () => [deferredView(c.r)] } : null,
-  c => (c.r.followUps || []).length ? { key: 'followups', title: 'Follow-up dossiers', badge: { text: c.r.followUps.length + ' without a dossier', tone: 'warn' }, def: paneDefault('followups', c.pd), cls: 'flat', body: () => [followUpList(c.r.followUps, false)] } : null,
   c => { const rv = resultView(c.r, c.d); return rv ? { key: 'result', fb: 'pane:result', title: 'Final reply', def: paneDefault('result', c.pd), cls: 'flat', body: () => [rv] } : null; },
   c => c.d && (c.mode === 'run' || c.hasTl) ? { key: 'timeline', title: c.d.planning ? 'Planning' : 'Implement dossier', badge: c.d.entries && c.d.entries.length ? { text: c.d.entries.length + ' updates', tone: 'neutral' } : null, def: paneDefault('timeline', c.pd), cls: 'flat',
     body: () => [c.mode === 'run' && (c.d.activeSection || '') === '' ? nowView(c.d, c.r.runner, true) : null, groupsView(c.d.groups || [], c.key, 'No updates yet — the agent posts here as the run progresses')] } : null,
