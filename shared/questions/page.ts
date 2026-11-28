@@ -60,7 +60,7 @@ a.stretch::after{content:"";position:absolute;inset:0;border-radius:12px}
 .panel .row{display:flex;gap:10px 14px;flex-wrap:wrap;align-items:center;margin:6px 0}
 .sum{color:var(--mut);max-width:80ch}
 .md{max-width:86ch}.md h1,.md h2,.md h3{border-bottom:1px solid var(--bd);padding-bottom:3px;text-transform:none;letter-spacing:0;color:var(--fg);font-size:1.1rem;margin:22px 0 8px;display:block}
-.md h1{font-size:1.35rem}.md table{border-collapse:collapse;margin:.5em 0;font-size:13px;display:block;max-width:100%;overflow-x:auto}.md th,.md td{border:1px solid var(--bd);padding:4px 10px;text-align:left;vertical-align:top}.md th{background:var(--chip);font-weight:600}.md a{color:var(--acc)}.md ul ul,.md ul ol,.md ol ul{margin:.15em 0}.md pre{background:var(--chip);padding:10px;border-radius:8px;overflow-x:auto;font-size:12.5px}.md code{background:var(--chip);padding:0 4px;border-radius:4px}
+.md h1{font-size:1.35rem}.md ul.choices{margin:.2em 0 .3em 1.2em;padding-left:.4em}.md table{border-collapse:collapse;margin:.5em 0;font-size:13px;display:block;max-width:100%;overflow-x:auto}.md th,.md td{border:1px solid var(--bd);padding:4px 10px;text-align:left;vertical-align:top}.md th{background:var(--chip);font-weight:600}.md a{color:var(--acc)}.md ul ul,.md ul ol,.md ol ul{margin:.15em 0}.md pre{background:var(--chip);padding:10px;border-radius:8px;overflow-x:auto;font-size:12.5px}.md code{background:var(--chip);padding:0 4px;border-radius:4px}
 .mini{display:flex;gap:10px;flex-wrap:wrap}.mini .card{padding:8px 12px;gap:2px;min-width:170px}
 /* timeline: newest on top */
 ol.tl{list-style:none;margin:0;padding:0 0 0 22px;border-left:2px solid var(--bd)}
@@ -917,7 +917,7 @@ function optButtons(q) {
 }
 function msgBlock(l) {
   const who = l.from === 'runner' ? 'closed automatically' : l.accepted ? 'agent · took your words as the answer' : l.from === 'owner' && l.kind === 'followup' ? 'you' : l.from + ' ' + l.kind;
-  return h('div', { class: 'msg ' + l.from }, [h('div', { class: 'who' }, [who + (l.option ? ' ' + l.option : '') + (l.via ? ' via ' + l.via : '') + ' · ', when(l.ts)]), h('div', {}, [l.text])]);
+  return h('div', { class: 'msg ' + l.from }, [h('div', { class: 'who' }, [who + (l.option ? ' ' + l.option : '') + (l.via ? ' via ' + l.via : '') + ' · ', when(l.ts)]), h('div', { class: 'md' }, mdLite(l.text))]);
 }
 /* Question text as light markdown, built with h() (never innerHTML): blank lines split paragraphs, '- ' / '1. ' lines
    are lists, '---' a rule, '# x' a small heading, **bold** and code spans inline; other line breaks are kept. */
@@ -925,25 +925,53 @@ function mdInline(t) {
   return String(t).split(/(\*\*[^*\n]+\*\*|\x60[^\x60\n]+\x60)/).filter(x => x !== '').map(x =>
     /^\*\*[^*]+\*\*$/.test(x) ? h('strong', {}, [x.slice(2, -2)]) : /^\x60[^\x60]+\x60$/.test(x) ? h('code', {}, [x.slice(1, -1)]) : x);
 }
+/* Inline choices "... a) x b) y c) z" (letters in order from a, at least two): the text before them, and one item
+   per choice, so each choice gets its own bullet. Null when the line holds no such run. */
+function optSplit(t) {
+  const re = /(^|\s)\(?([a-h])\)\s+/g; const at = []; let m, want = 97;
+  while ((m = re.exec(t))) if (m[2].charCodeAt(0) === want) { at.push(m.index + m[1].length); want++; }
+  if (at.length < 2) return null;
+  return { pre: t.slice(0, at[0]).trim(), items: at.map((s, i) => t.slice(s, i + 1 < at.length ? at[i + 1] : t.length).trim()) };
+}
+const optList = (items) => h('ul', { class: 'choices' }, items.map(x => h('li', {}, mdInline(x))));
+const mdCells = (l) => l.trim().replace(/^\|/, '').replace(/\|$/, '').split('|').map(c => c.trim());
+const mdSep = (l) => /^\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)*\|?$/.test(String(l || '').trim());
 function mdLite(text) {
   const out = []; let para = null, list = null;
   const end = () => { para = null; list = null; };
-  String(text || '').split('\n').forEach(raw => {
-    const t = raw.trim();
-    if (!t) return end();
-    if (/^(-{3,}|\*{3,})$/.test(t)) { end(); out.push(h('hr', {}, [])); return; }
+  const lines = String(text || '').split('\n');
+  for (let n = 0; n < lines.length; n++) {
+    const t = lines[n].trim();
+    if (!t) { end(); continue; }
+    // A pipe table: a header row, a --- separator row, then body rows that start with '|'.
+    if (t.startsWith('|') && mdSep(lines[n + 1])) {
+      end();
+      const head = h('tr', {}, mdCells(t).map(c => h('th', {}, mdInline(c))));
+      const rows = []; n += 2;
+      while (n < lines.length && lines[n].trim().startsWith('|')) { rows.push(h('tr', {}, mdCells(lines[n]).map(c => h('td', {}, mdInline(c))))); n++; }
+      n--;
+      out.push(h('table', {}, [h('thead', {}, [head]), h('tbody', {}, rows)]));
+      continue;
+    }
+    if (/^(-{3,}|\*{3,})$/.test(t)) { end(); out.push(h('hr', {}, [])); continue; }
     const hd = /^#{1,6}\s+(.*)$/.exec(t);
-    if (hd) { end(); out.push(h('h4', {}, mdInline(hd[1]))); return; }
+    if (hd) { end(); out.push(h('h4', {}, mdInline(hd[1]))); continue; }
     const li = /^([-*]|\d+[.)])\s+(.*)$/.exec(t);
     if (li) {
       const tag = /\d/.test(li[1]) ? 'ol' : 'ul';
       if (!list || list.tag !== tag) { para = null; list = { tag, el: h(tag, {}, []) }; out.push(list.el); }
-      list.el.appendChild(h('li', {}, mdInline(li[2]))); return;
+      const sp = optSplit(li[2]);
+      list.el.appendChild(h('li', {}, sp ? mdInline(sp.pre).concat([optList(sp.items)]) : mdInline(li[2]))); continue;
     }
     list = null;
-    if (para) { para.appendChild(h('br', {}, [])); mdInline(t).forEach(k => para.appendChild(typeof k === 'string' ? document.createTextNode(k) : k)); }
-    else { para = h('p', {}, mdInline(t)); out.push(para); }
-  });
+    const sp = optSplit(t);
+    const words = sp ? sp.pre : t;
+    if (words) {
+      if (para) { para.appendChild(h('br', {}, [])); mdInline(words).forEach(k => para.appendChild(typeof k === 'string' ? document.createTextNode(k) : k)); }
+      else { para = h('p', {}, mdInline(words)); out.push(para); }
+    }
+    if (sp) { out.push(optList(sp.items)); para = null; }
+  }
   return out;
 }
 // A multi-line question follows the card layout (references/owner-questions.md, "The card layout"): its first line
@@ -955,14 +983,15 @@ function qBody(text) {
   const rest = lines.slice(i + 1);
   const di = rest.findIndex(l => /^\s*(\*\*Details\*\*:?|#{1,6}\s+Details|Details:)\s*$/i.test(l));
   const front = di < 0 ? rest : rest.slice(0, di), back = di < 0 ? [] : rest.slice(di + 1);
-  return [h('div', { class: 'qh' }, mdInline(head))].concat(mdLite(front.join('\n')),
+  const hs = optSplit(head);
+  return [h('div', { class: 'qh' }, mdInline(hs ? hs.pre : head))].concat(hs ? [optList(hs.items)] : [], mdLite(front.join('\n')),
     back.some(l => l.trim()) ? [h('details', { class: 'qdet' }, [h('summary', {}, ['Details']), h('div', {}, mdLite(back.join('\n')))])] : []);
 }
 function qCard(q, opts) {
   const open = q.state === 'open'; const repo = qRepo(q);
   const kids = [
     h('div', { class: 'top' }, [chip(rlabel(repo), 'neutral'), h('a', { class: 'chip', href: hrefItem(repo, q.dossier) }, [q.dossier]), h('span', { class: 'grow' }), q.qkind ? chip(q.qkind, 'neutral') : null, h('span', { class: 'mono' }, [q.id + ' · ']), opts.queue ? when(q.ts, 'waiting ') : when(q.ts)]),
-    /\n/.test(q.text || '') ? h('div', { class: 'q md' }, qBody(q.text)) : h('div', { class: 'q' }, [q.text]),
+    /\n/.test(q.text || '') || optSplit(q.text || '') ? h('div', { class: 'q md' }, qBody(q.text)) : h('div', { class: 'q' }, [q.text]),
     // The diagrams live on the dossier page, not in the card: link them, whatever the question text says.
     q.topic === 'visual-review' && opts.strip ? h('div', { class: 'ctl' }, [h('button', { class: 'btn primary', type: 'button', 'data-act': 'pane-go', 'data-pane': 'diagram' }, ['Open the diagrams for ' + q.dossier])]) : q.topic === 'visual-review' ? h('div', { class: 'ctl' }, [h('a', { class: 'btn primary', href: hrefItem(repo, q.dossier), 'data-k': 'vrlink' }, ['Open the diagrams for ' + q.dossier])]) : null,
     q.blocks ? h('div', { class: 'blocks' }, ['Blocks: ' + q.blocks]) : null];
@@ -972,7 +1001,7 @@ function qCard(q, opts) {
   if (open && talk.length) {
     const last = talk[talk.length - 1];
     kids.push(h('div', { class: 'qchat', 'data-k': 'qc:' + q.id }, talk.map((l, i) => h('div', { class: 'cm ' + (l.from === 'owner' ? 'me' : 'them'), 'data-k': 'qc:' + q.id + ':' + i }, [
-      h('div', { class: 'who' }, [(l.from === 'owner' ? 'You' : 'Agent') + (l.via ? ' via ' + l.via : '') + ' · ', when(l.ts)]), h('div', { class: 'tx' }, [l.text]),
+      h('div', { class: 'who' }, [(l.from === 'owner' ? 'You' : 'Agent') + (l.via ? ' via ' + l.via : '') + ' · ', when(l.ts)]), h('div', { class: 'tx md' }, mdLite(l.text)),
       l.options && l.options.length ? h('div', { class: 'small mut' }, ['Added ' + l.options.map(o => o.key + ' · ' + o.label).join(', ') + ' to the buttons below']) : null]))
       .concat(last.from === 'owner' ? [h('div', { class: 'cm them wait', 'data-k': 'qc:' + q.id + ':wait' }, [h('span', { class: 'dot info live' }), ' Waiting for the agent\'s reply…'])] : [])));
   }
