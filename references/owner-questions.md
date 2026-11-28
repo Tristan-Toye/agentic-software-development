@@ -644,7 +644,7 @@ restarted server answers at once from them while its first scan runs.
     `<details>`; open or closed is remembered per viewer in localStorage, and works without storage) under a sticky status header, with
     a **Needs you now** strip on top that answers open questions in place and a section rail with state badges: Dossier summary and
     the open decisions start open; history, answered questions and the timeline start closed. The dossier markdown is one pane per
-    H2. The repo-wide **Standing rulings** live on the repo page (`/repo/<repo>#rulings`); the dossier page keeps a one-line link.
+    H2. The repo-wide **Standing rulings** live on the repo page (`/repo/<repo>#rulings`), last on the page and folded; the dossier page keeps a one-line link, which opens it.
     Each pane shows when it has content. Each
     item has a Plan button that copies `/plan <ID> D-n` (ledgers of dossiers last
     updated before 2026-11-03 and never run by the runner are ignored,
