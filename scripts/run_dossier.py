@@ -696,6 +696,18 @@ BG_STOP_TOOLS = {"TaskStop": "task_id", "KillShell": "shell_id", "KillBash": "sh
 BG_OUTPUT = re.compile(r"written to:?\s*(\S+?)\.?(?:\s|$)")
 
 
+def bg_launch(tool: str, asked: bool, result: str) -> bool:
+    """Whether a tool result that names a background launch is the harness's own launch notice, not the same words in
+    a foreground command's output (W-037: a Bash that printed a workflow journal, where a subagent wrote "was moved to
+    the background (task …)", held the stage end for hours on a task that never existed). A shell command went to the
+    background only when its call asked for it (`run_in_background`) or its result is the harness's notice, which
+    starts with "Command "; any other tool (Agent, Workflow, ...) keeps the phrase check alone."""
+    if tool != "Bash":
+        return True
+    head = result.lstrip()[:200]
+    return asked or head.startswith("Command ") or head.startswith('{"message":"Command ')
+
+
 def transcript_path(session: str, config_dir: str | None) -> str | None:
     """The session's transcript: `<config dir>/projects/*/<session>.jsonl` (`ASD_TRANSCRIPTS_DIR` overrides the
     projects dir)."""
@@ -720,6 +732,7 @@ def background_tasks(lines: list[str]) -> list[dict]:
     the "stopped" / "No task found" texts end it too."""
     calls: dict[str, str] = {}
     tools: dict[str, str] = {}      # tool_use id -> the tool's name (Bash, Agent, Workflow, ...)
+    asked_bg: set[str] = set()      # tool_use ids whose input asked for the background (run_in_background)
     stops: dict[str, str] = {}      # a stop call's tool_use id -> the task id it names
     bg: dict[str, dict] = {}
     task_of: dict[str, str] = {}   # background task id -> the tool_use id that launched it
@@ -735,6 +748,8 @@ def background_tasks(lines: list[str]) -> list[dict]:
                     i = b.get("input") or {}
                     calls[b["id"]] = str(i.get("description") or i.get("name") or i.get("skill") or b.get("name") or "tool")[:100]
                     tools[b["id"]] = str(b.get("name") or "")
+                    if i.get("run_in_background") is True:
+                        asked_bg.add(b["id"])
                     key = BG_STOP_TOOLS.get(str(b.get("name") or ""))
                     if key and i.get(key):
                         stops[b["id"]] = str(i[key])
@@ -746,7 +761,7 @@ def background_tasks(lines: list[str]) -> list[dict]:
                 if b.get("type") == "tool_result" and b.get("tool_use_id") in calls:
                     t = b.get("content") if isinstance(b.get("content"), str) else json.dumps(b.get("content") or "")
                     tid = b["tool_use_id"]
-                    if BG_LAUNCHED.search(t[:400]):
+                    if BG_LAUNCHED.search(t[:400]) and bg_launch(tools.get(tid, ""), tid in asked_bg, t):
                         m = BG_TASK_ID.search(t[:400])
                         out = BG_OUTPUT.search(t[:600])
                         bg[tid] = {"label": calls[tid], "id": m.group(1) if m else "", "output": out.group(1) if out else "", "tool": tools.get(tid, "")}
@@ -5740,6 +5755,12 @@ def selftest() -> int:
                                                 J({"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "k1", "content": res, "is_error": err}]}})]
         check("background: a command moved to the background after its timeout is in flight, with its output path", [t["output"] for t in background_tasks(mv)] == ["/tmp/x/tasks/mv1.output"])
         check("background: each task carries the tool that launched it", [t["tool"] for t in background_tasks(mv)] == ["Bash"])
+        echo = [J({"type": "assistant", "message": {"content": [{"type": "tool_use", "id": "e1", "name": "Bash", "input": {"command": "python3 -c read-journal"}}]}}),
+                J({"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "e1", "content": "- TEST_COMMAND did not finish within the 120 s tool limit and was moved to the background (task bfterwus8). I could not read its result."}]}})]
+        asked = [J({"type": "assistant", "message": {"content": [{"type": "tool_use", "id": "a1", "name": "Bash", "input": {"command": "x", "run_in_background": True}}]}}),
+                 J({"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "a1", "content": "Running in the background now (ID: a1x)"}]}})]
+        check("background: a foreground command whose output quotes a launch notice launches nothing (W-037 phantom); a call that asked for the background still does",
+              background_tasks(echo) == [] and [t["id"] for t in background_tasks(asked)] == ["a1x"] and len(background_tasks(mv)) == 1)
         rw = object.__new__(Runner)
         rw.turn_open, rw.stopping, rw.state = True, False, {"state": "testing"}
         setattr(rw, "proc", type("P", (), {"poll": lambda self: None})())
