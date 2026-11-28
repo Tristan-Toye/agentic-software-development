@@ -1491,7 +1491,10 @@ def check_pr_field(where: str, text: str, rep: Report) -> None:
                  "`validate_pipeline.py --normalize-pr` rewrites it")
 
 
-def validate_dossier(path: Path, repo_root: Path) -> Report:
+def validate_dossier(path: Path, repo_root: Path, anchor_root: Path | None = None) -> Report:
+    # `anchor_root`: the tree the dossier's `path:line` anchors resolve against. The dossier file is read from
+    # `repo_root` (local mode keeps `.discovery/` in the main checkout), but the code it cites lives in the
+    # build worktree, and the main checkout may sit on another branch.
     rep = Report()
     where = path.name
     try:
@@ -1534,7 +1537,7 @@ def validate_dossier(path: Path, repo_root: Path) -> Report:
         # K5: a kanban dossier is sized to the change; `## Decisions` is optional (none to record).
         expected = DOSSIER_SECTIONS
     check_headings(where, body, expected, rep)
-    check_anchors(where, fm, repo_root, rep, body, str(status))
+    check_anchors(where, fm, anchor_root or repo_root, rep, body, str(status))
     check_pr_field(where, path.read_text(), rep)
 
     sec = sections(body)
@@ -2907,6 +2910,19 @@ def selftest() -> int:
         for name, passed in checks_233.items():
             print(f"{'PASS' if passed else 'FAIL'} — {name}")
         if not all(checks_233.values()):
+            return 1
+        # anchors resolve against the build worktree when given, not the checkout the dossier is read from
+        bare = root / "bare-checkout"
+        bare.mkdir()
+        r_main = validate_dossier(d / "W-018-idlog.md", bare)
+        r_wt = validate_dossier(d / "W-018-idlog.md", bare, croot)
+        checks_anchor = {
+            "anchors missing in the checkout are a DEFECT": any("does not exist" in x for x in r_main.defects),
+            "anchors found in the given worktree are not": not any("does not exist" in x for x in r_wt.defects),
+        }
+        for name, passed in checks_anchor.items():
+            print(f"{'PASS' if passed else 'FAIL'} — {name}")
+        if not all(checks_anchor.values()):
             return 1
         (d / "W-017-idcontract.md").unlink()
         (d / "W-018-idlog.md").unlink()
@@ -5375,8 +5391,9 @@ def main() -> int:
     )
     ap.add_argument(
         "--worktree",
-        help="with --pre-fanout: the worktree X that holds the stubs, when it "
-        "is not --root (local mode validates the dossier from the main "
+        help="the worktree X that holds the code, when it is not --root: with --pre-fanout "
+        "the stubs, and for a plain --dossier check the tree the dossier's anchors resolve "
+        "against (local mode validates the dossier from the main "
         "checkout while the stubs live in X; the dossier's `worktree:` front-"
         "matter field is used when the flag is not given)",
     )
@@ -5515,7 +5532,7 @@ def main() -> int:
             return 0
 
     for p in targets_d:
-        rep.merge(validate_dossier(p, root))
+        rep.merge(validate_dossier(p, root, Path(args.worktree).resolve() if args.worktree else None))
     check_blocker_removals(root, targets_d, args.base or default_base(root), rep)
     for p in targets_a:
         rep.merge(validate_adr(p, root))

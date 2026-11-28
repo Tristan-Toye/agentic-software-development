@@ -209,21 +209,29 @@ def run(d: dc.Driver, args) -> int:
     path = dc.resolve_dossier(args.root, args.dossier, also=(os.path.abspath(args.worktree),) if args.worktree else ())
     text = open(path, encoding="utf-8").read()
     wt = os.path.abspath(args.worktree) if args.worktree else args.root
-    validator_step(d, "validate", args.root, args, [])
+    validator_step(d, "validate", args.root, args, ["--worktree", wt] if args.worktree else [])
     validator_step(d, "receipts", args.root, args, ["--pre-fanout"] + (["--worktree", wt] if args.worktree else []))
     step_criteria(d, text)
     step_census(d, wt, args)
     step_frozen(d, text, wt)
     if args.gates:
-        rc, out = dc.script("run_gates.py", args.gates, "--root", wt, cwd=wt)
-        if rc == 0:
-            d.step("gates", "ok", "text gates green over the materialised contract")
-        elif rc == 1:
-            d.step("gates", "finding", "a gate failed")
-            for ln in dc.cap(out, 6):
-                d.finding("gates: " + ln)
+        # a relative --gates FILE is the repository's own `.discovery/analysis/gates-<ID>.txt`: `.discovery/` is local
+        # to the main checkout (gitignored), so it resolves against --root, not the worktree the gates run in
+        gates = args.gates if os.path.isabs(args.gates) else next(
+            (c for c in (os.path.join(args.root, args.gates), os.path.join(wt, args.gates), os.path.abspath(args.gates)) if os.path.isfile(c)),
+            os.path.join(args.root, args.gates))
+        if not os.path.isfile(gates):
+            d.step("gates", "skipped", f"gates file not found: {gates} (nothing to run)")
         else:
-            raise dc.Surprise(f"run_gates.py exited {rc}: {' | '.join(dc.cap(out, 3))}")
+            rc, out = dc.script("run_gates.py", gates, "--root", wt, cwd=wt)
+            if rc == 0:
+                d.step("gates", "ok", "text gates green over the materialised contract")
+            elif rc == 1:
+                d.step("gates", "finding", "a gate failed")
+                for ln in dc.cap(out, 6):
+                    d.finding("gates: " + ln)
+            else:
+                raise dc.Surprise(f"run_gates.py exited {rc}: {' | '.join(dc.cap(out, 3))}")
     else:
         d.step("gates", "skipped", "no --gates FILE given")
     step_slices(d, args)
@@ -279,6 +287,25 @@ def selftest() -> int:
         c("frozen count mismatch is flagged (5 vs 2)", any("gives 2" in f for f in data["findings"]))
         c("slice problems flagged", "sub" in found and "ghost" in found and "two slices" in found)
         c("receipts step ran and found the missing receipts", any(s["step"] == "receipts" and s["status"] == "finding" for s in data["steps"]))
+        # bug fixes: a relative --gates file lives under --root (gitignored .discovery/), and a missing one is skipped, never exit 2
+        dc.fixture_write(main, ".discovery/analysis/gates-W-1.txt", "lint: true\n")
+        wt3 = os.path.join(tmp, "wt3")
+        dc.fixture_git(main, "worktree", "add", "-q", "-b", "feat/W-1-wt3", wt3)
+        rc, out = dc.run_self("pre_fanout_check.py", "--dossier", "W-1", "--root", main, "--worktree", wt3, "--gates", ".discovery/analysis/gates-W-1.txt", env=env, cwd=tmp)
+        c("a relative gates file resolves against --root, not the worktree", "No such file" not in out and "exited 2" not in out and rc != 2)
+        rc, out = dc.run_self("pre_fanout_check.py", "--dossier", "W-1", "--root", main, "--worktree", wt3, "--gates", ".discovery/analysis/gates-none.txt", env=env, cwd=tmp)
+        c("an absent gates file is skipped, not a surprise", rc != 2 and "gates file not found" in out)
+        # the dossier's anchors resolve in the worktree, not the main checkout (which may sit on another branch)
+        dc.fixture_write(main, ".discovery/dossiers/W-7-anch.md", "---\nid: W-7\nstatus: building\nanchors:\n  - src/only_in_wt.py:1\n---\n" + text)
+        dc.fixture_write(wt3, "src/only_in_wt.py", "x = 1\n")
+        rc, out = dc.run_self("pre_fanout_check.py", "--dossier", "W-7", "--root", main, "--worktree", wt3, env=env)
+        ev7 = os.path.join(main, ".git", "asd-drivers", "driver-evidence", "W-7")
+        d7 = json.load(open(os.path.join(ev7, sorted(os.listdir(ev7))[0])))
+        c("an anchor present only in the worktree is not a finding", not any("points at a file" in f for f in d7["findings"]))
+        rc, out = dc.script("validate_pipeline.py", "--root", main, "--dossier", "W-7", cwd=main)
+        c("without the worktree the same anchor is still flagged", "src/only_in_wt.py:1' points at a file" in out)
+        rc, out = dc.script("validate_pipeline.py", "--root", main, "--dossier", "W-7", "--worktree", wt3, cwd=main)
+        c("validate_pipeline --worktree resolves anchors there", "points at a file" not in out)
         rc, out = dc.run_self("pre_fanout_check.py", "--dossier", "W-9", "--root", main, env=env)
         c("a missing dossier is a surprise", rc == 2 and "not found" in out)
         # derived: --dossier from the branch name, and a dossier file that lives in the worktree only
