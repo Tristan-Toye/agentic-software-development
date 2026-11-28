@@ -241,7 +241,7 @@ details.pane>summary:focus-visible,.rail-i:focus-visible,.vrmore>summary:focus-v
 .vrmore{position:relative;display:inline-block}.vrmore>summary{display:inline-block;list-style:none;margin:0;font-size:12.5px;padding:3px 11px;border:1px solid var(--bd);border-radius:8px;background:var(--card);color:var(--fg);cursor:pointer}.vrmore>summary::-webkit-details-marker{display:none}
 .vrmore .vrmenu{position:absolute;right:0;top:calc(100% + 4px);z-index:30;display:flex;flex-direction:column;gap:4px;padding:8px;min-width:150px;border:1px solid var(--bd2);border-radius:10px;background:var(--raised);box-shadow:var(--shadow)}
 .vrmore .vrmenu .btn{text-align:left}
-.rulelink{margin:6px 2px 24px}
+.rulelink{margin:6px 2px 24px}details.rulings{margin-top:18px}details.rulings>summary{margin:0;cursor:pointer}
 @media (prefers-reduced-motion:reduce){details.pane>summary::before{transition:none}}
 </style></head><body>
 <header><a class="brand" href="/">Pipeline</a><nav class="crumbs" id="crumbs" aria-label="Breadcrumb"></nav><a class="pill dmlink" href="/chat" title="Talk to the agent, as in the Slack DM">Ask the agent</a><span class="pill" id="slack"></span><span class="pill" id="upd"></span></header>
@@ -1435,10 +1435,11 @@ function repoView(repo) {
   const fv = flowsView(repo); if (fv) kids.push(fv);
   const tv = trustView(repo); if (tv) kids.push(tv);
   const dp = docPrsView(repo); if (dp) kids.push(dp);
-  const rl = rulingsView(repo); if (rl) kids.push(rl);
   const sw = sweepView(repo); if (sw) kids.push(sw);
   const vm = vrRepoLink(repo); if (vm) kids.push(vm);
   kids.push(h('section', { class: 'main-col', 'data-k': 'sec:report' }, [h('h2', {}, ['Open work']), frame]));
+  // Standing rulings are reference, not work: last on the page, folded (opened by the dossier page's #rulings link).
+  const rl = rulingsView(repo); if (rl) kids.push(rl);
   return h('div', {}, kids);
 }
 /* The dossier sits on an open stub with a PR into it (the stub card's "PR open · waiting for your merge"). */
@@ -1716,9 +1717,10 @@ function rulingsView(repo) {
     h('pre', { class: 'blk-cmd' }, [x.rule]),
     h('div', { class: 'small mut' }, ['saved by ' + (x.by || 'owner') + (x.question ? ' · answering ' + x.question : '') + ' · ', when(x.ts)]),
     h('div', { class: 'ctl' }, [h('button', { class: 'btn', type: 'button', 'data-act': 'rmrule', 'data-repo': repo, 'data-rule': x.rule, disabled: st.busy ? true : null }, ['Remove'])])]));
-  const kids = [h('div', { class: 'res-hd' }, [h('span', { class: 'kind' }, ['Standing rulings for ' + repo + ' · ' + rs.length]), h('span', { class: 'small mut' }, ['applied to every later session of this repo'])])].concat(rows);
+  const kids = [h('summary', { class: 'res-hd' }, [h('span', { class: 'kind' }, ['Standing rulings for ' + repo + ' · ' + rs.length]), h('span', { class: 'small mut' }, ['applied to every later session of this repo'])])].concat(rows);
   if (st.msg) kids.push(h('div', { class: 'ctl-msg ' + (st.ok ? 'ok' : 'bad') }, [st.msg]));
-  return h('section', { class: 'panel rulings', id: 'rulings', 'data-k': 'rulings' }, kids);
+  const open = st.msg || (typeof location !== 'undefined' && location.hash === '#rulings');
+  return h('details', Object.assign({ class: 'panel rulings', id: 'rulings', 'data-k': 'rulings' }, open ? { open: true } : {}), kids);
 }
 /* What the dossier changed, in product terms (/product-summary, written after Phase 9), above the dossier itself. */
 function summaryView(r, d) {
