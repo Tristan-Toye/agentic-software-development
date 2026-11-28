@@ -97,7 +97,11 @@ parent (the open PR whose head is this PR's base) is itself DIRTY/CONFLICTING:
 GitHub starts no workflow for a stacked child then, so resolve the parent
 (checked before any retrigger); 6 CI never started: the PR
 head has no workflow run (a stale green on an older head, or no run at all
-after the register wait) even after one retrigger.
+after the register wait) even after one retrigger; 8 a workflow file of the head
+did not parse (GitHub names such a run by the file's path and starts none of its
+jobs, so it never shows in `gh pr checks`): checked when no run appears (before
+the parent check) and before an all-green verdict, since the workflows that did
+parse can be green while the broken one never ran. Fix the YAML and push.
 
 A head with no run is re-triggered ONCE per head sha, through the PR's own
 state: `gh pr close N` then `gh pr reopen N` (fires `reopened`, recomputes
@@ -126,6 +130,7 @@ import run_tests  # noqa: E402  (must follow the sys.path fix-up above)
 LINK_RE = re.compile(r"/actions/runs/(\d+)(?:/job/(\d+))?")
 ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
 BAD_BUCKETS = ("fail", "cancel")
+WORKFLOW_PATH_RE = re.compile(r"^\.github/workflows/[^/]+\.ya?ml$")
 DEFAULT_REGISTER_WAIT = 120.0
 WATCH_EVERY = 4  # polls between merge-state re-checks while waiting
 NOT_REGISTERED = "no checks registered yet"
@@ -368,6 +373,34 @@ def parent_line(number: int, state: dict, parent: tuple[int, str]) -> str:
             f"which conflicts with {parent[1]}; GitHub starts no workflow for the child while its parent conflicts "
             f"(CI did not fail, it did not run). Resolve #{parent[0]}: merge {parent[1]} into it (the resolve-merge procedure) "
             f"and push; CI then starts for #{number}")
+
+
+def invalid_workflows(runner: Runner, head: str, repo: str | None) -> list[tuple[str, str]]:
+    """(workflow file, run link) for every workflow of `head` that GitHub could not parse. Such a run carries the file's
+    path as its name (".github/workflows/ci.yml") instead of the `name:` inside it, fails at startup and starts no job,
+    so `gh pr checks` lists nothing for it: it reads as "CI never started" (or, when another workflow ran, as green).
+    Any gh error gives [] (the guard is skipped, the wait behaves as before)."""
+    if not head:
+        return []
+    rc, out, _ = runner(with_repo(["gh", "run", "list", "--commit", head, "--limit", "50", "--json",
+                                   "workflowName,status,conclusion,url"], repo))
+    try:
+        runs = json.loads(out) if rc == 0 else []
+    except (json.JSONDecodeError, TypeError):
+        return []
+    bad: dict[str, str] = {}
+    for r in runs if isinstance(runs, list) else []:
+        name = str(r.get("workflowName") or "")
+        if WORKFLOW_PATH_RE.match(name) and r.get("status") == "completed" and r.get("conclusion") == "failure":
+            bad.setdefault(name, str(r.get("url") or ""))
+    return sorted(bad.items())
+
+
+def invalid_line(number: int, head: str, bad: list[tuple[str, str]]) -> str:
+    files = ", ".join(f"{f} ({u})" if u else f for f, u in bad)
+    return (f"wait_ci: workflow file invalid: {files} did not parse on PR #{number} head {head[:12]}, so GitHub started "
+            "none of its jobs (CI did not run them; this is a red CI, not a wait). Fix the YAML on this branch (a common "
+            "cause: an unquoted value containing ': ', e.g. a step `name: Check: x`), push, and wait on CI again")
 
 
 def never_started(runner: Runner, args: argparse.Namespace, number: int, head: str, retriggered: bool) -> int:
@@ -628,6 +661,10 @@ def main(argv: list[str] | None = None, runner: Runner | None = None) -> int:
         if no_run and is_pr:
             cur = pr_state(active_runner, pr_no, args.repo)
             head = str((cur or {}).get("headRefOid") or "")
+            bad = invalid_workflows(active_runner, head, args.repo)
+            if bad:
+                print(invalid_line(pr_no, head, bad), file=sys.stderr)
+                return 8
             parent = parent_conflict(active_runner, cur, args.repo) if cur else None
             if parent:
                 print(parent_line(pr_no, cur or {}, parent), file=sys.stderr)
@@ -664,6 +701,12 @@ def main(argv: list[str] | None = None, runner: Runner | None = None) -> int:
         if outcome == "done" and state and state.get("headRefOid") and checks \
                 and not any(c.get("bucket") in BAD_BUCKETS for c in checks):
             head = str(state["headRefOid"])
+            bad = invalid_workflows(active_runner, head, args.repo)
+            if bad:
+                # the workflows that parsed are green, but one never ran: not a verdict (config-harness #706)
+                report(active_runner, checks, args)
+                print(invalid_line(pr_no, head, bad), file=sys.stderr)
+                return 8
             stale = stale_head(active_runner, checks, head, args.repo)
             if stale:
                 print(f"wait_ci: stale green refused: run {stale[0]} ran on {stale[1][:12]} but PR #{pr_no} "
@@ -1097,6 +1140,36 @@ def selftest() -> int:
     rc3, _ = run14(log3, heal=True)
     check("a retrigger that works continues the same call to green", rc3 == 0
           and sum(1 for c in log3 if c[:3] == ["gh", "pr", "close"]) == 1)
+
+    def runner_badwf(green: bool):
+        def r(cmd: list[str]) -> tuple[int, str, str]:
+            if cmd[:3] == ["gh", "pr", "view"]:
+                return 0, json.dumps({"headRefOid": "feedface00112233", "mergeable": "MERGEABLE", "mergeStateStatus": "BLOCKED",
+                                      "baseRefName": "development"}), ""
+            if cmd[:3] == ["gh", "pr", "checks"]:
+                if green:
+                    return 0, json.dumps([{"name": "PR source", "state": "SUCCESS", "bucket": "pass",
+                                           "link": "https://github.com/o/r/actions/runs/5/job/6", "workflow": "Enforce"}]), ""
+                return 1, "", "no checks reported on the 'sync/x' branch"
+            if cmd[:3] == ["gh", "run", "list"] and "--commit" in cmd:
+                return 0, json.dumps([{"workflowName": ".github/workflows/ci.yml", "status": "completed", "conclusion": "failure",
+                                       "url": "https://github.com/o/r/actions/runs/7"},
+                                      {"workflowName": "Enforce", "status": "completed", "conclusion": "success", "url": ""}]), ""
+            if cmd[:3] == ["gh", "run", "view"]:
+                return 0, "feedface00112233\n", ""
+            return 1, "", "unexpected call"
+        return r
+
+    for green in (False, True):
+        sdir = tempfile.mkdtemp(prefix="wait_ci_st_")
+        o8, e8 = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(o8), contextlib.redirect_stderr(e8):
+            rc8 = main(["--pr", "9", "--interval", "0.01", "--register-wait", "0.05", "--state-dir", sdir],
+                       runner=runner_badwf(green))
+        check(f"a workflow file that does not parse gives 8 naming it ({'other workflows green' if green else 'no check at all'}), "
+              "never a retrigger or a parent verdict",
+              rc8 == 8 and ".github/workflows/ci.yml" in e8.getvalue() and "did not parse" in e8.getvalue()
+              and "Enforce" not in e8.getvalue().split("did not parse")[0])
 
     for item in failures_list:
         print("SELFTEST FAIL  " + item)

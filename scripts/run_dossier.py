@@ -2781,7 +2781,7 @@ class Runner:
                             rkey = self.start_parent_resolve(parent)
                             resolving[n] = (parent, rkey, time.monotonic() + env_num("ASD_PARENT_RESOLVE_TIMEOUT", 4 * 3600), time.monotonic())
                             continue
-                        if p.returncode not in (0, 1, 3, 6, 7):
+                        if p.returncode not in (0, 1, 3, 6, 7, 8):   # 8: a workflow file did not parse (red: fix the YAML)
                             tail = f"(wait_ci exit {p.returncode}) " + tail
                         out[n] = (verdict, tail)
                 if self.stopping:
