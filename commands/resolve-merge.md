@@ -3,7 +3,8 @@ description: >-
   Bring a dossier's pull requests up to date with the stub they merge into
   when they conflict: merge the base into each conflicting branch, resolve
   every conflict keeping both sides' intent, prove it with the affected tests
-  and gates, push. Never merges into the stub, rebases or force-pushes.
+  and gates, push (the stub's own PR through an auto-merging sync PR). Never
+  pushes to the stub, rebases or force-pushes.
   Started by the dashboard's merge queue.
 argument-hint: "<dossier ID, e.g. W-128> <PR numbers, bottom to top, e.g. 427,429>"
 ---
@@ -145,7 +146,7 @@ Note the commit you started the merge on (`before=$(git rev-parse HEAD)`, taken 
 not happen, usually a hook (lefthook) refused it: read the output of `git commit`, fix what it names, commit again, and re-run the check. A hook failure is never skipped: no `--no-verify`, and no owner question asking to allow it. An error that looks platform-only (a Linux-only module on macOS, E0432) is a defect like any other, often an attribute such as `#[cfg(target_os = "linux")]` that a merge or an inserted line moved off the item it gated: compare the file with the base (`git diff <base> -- <file>`) and put it back. Say "the
 merge is committed" only after exit 0. A MERGE_HEAD, staged files or a `.git/index.lock` in a worktree this session created is its own unfinished
 merge, never "a second process changing the worktree": call it another process only when `ps` or a lock file names one (a live pid), and never ask
-the owner about your own pending merge. Then `git push` (never `--force`). Check each pull request reads
+the owner about your own pending merge. Then `git push` (never `--force`), except for the stub's own pull request (next paragraph). Check each pull request reads
 `MERGEABLE` (`gh pr view <n> --json mergeable`; GitHub may need a minute).
 Then wait for each pushed pull request's CI, bottom first, in one call each:
 `python3 ${PLUGIN_ROOT}/scripts/wait_ci.py --pr <n>`. Do not end while it is
@@ -157,10 +158,32 @@ the note. Remove the worktrees. Post one note: which pull requests conflicted, i
 files, how each was resolved, and the test and gate results. Under the runner,
 end with `RUNNER: DONE`; the merge queue merges next.
 
+### The stub's own pull request
+
+When the head branch is the stub itself (the stub's pull request into
+development, whose head is `stub/<date>`), the stub's branch rule refuses a
+direct push (GH013: changes must go through a pull request). That refusal is
+expected, never an owner question. Push the merge to a side branch
+`sync/<stub-branch-with-dashes>-<YYYY-MM-DD>` (`git push origin HEAD:refs/heads/sync/...`,
+a fresh name, never `--force`), open a pull request from it into the stub
+(`gh pr create --base <stub> --head sync/...`, title `Sync <stub> with
+development`, body: the conflicted files and how each was resolved, the test
+and gate results), and turn on auto-merge with a merge commit:
+`gh pr merge <n> --auto --merge` (never `--squash` or `--rebase`, so the
+merge of development stays a real merge and the stub PR's conflict goes away).
+Then wait for the sync pull request's CI with `wait_ci.py --pr <n>` as above; when
+the checks pass GitHub merges it and the stub's pull request picks the merge up.
+A red check is fixed on the sync branch and pushed again. When the repository
+refuses auto-merge (its `allow_auto_merge` is off), leave the pull request open,
+say so in one line of the note, and end: the owner merges it. The owner answered
+this once (config-harness Q12, 2026-11-28); never ask it again.
+
 ## Rules
 
 - Never merge, approve or close a pull request, never push to the stub, never
-  rebase, never `--force`.
+  rebase, never `--force`. The one merge you start is the auto-merge of your
+  own sync pull request into the stub (Step 4), which GitHub performs only
+  after the required checks pass.
 - Never change code outside the conflicted hunks, except a test or gate fix
   the merge itself made necessary.
 - Never resolve by taking one side wholesale (`-X ours`, `-X theirs`,
