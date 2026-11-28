@@ -908,6 +908,15 @@ try {
   const q1 = md("**Frame: x**\n\n**Intent.** Two\nlines.\n\n**Scope.**\n- In: a `b`\n- Out: c\n1. one\n2. two\n\n---\n\n# Q2\nend").map(flat).join("")
   check("question card: light markdown keeps paragraphs, bold, line breaks, lists, rules and headings, no raw **",
     q1 === "<p><strong>Frame: x</strong></p><p><strong>Intent.</strong> Two|lines.</p><p><strong>Scope.</strong></p><ul><li>In: a <code>b</code></li><li>Out: c</li></ul><ol><li>one</li><li>two</li></ol><hr></hr><h4>Q2</h4><p>end</p>", q1)
+  const tb = md("**Checks**\n\n| Stage | Check |\n|---|---|\n| Selection | judge `x` |\n| Script | rules |\nafter").map(flat).join("")
+  check("question card: a pipe table renders as a table",
+    tb === "<p><strong>Checks</strong></p><table><thead><tr><th>Stage</th><th>Check</th></tr></thead><tbody><tr><td>Selection</td><td>judge <code>x</code></td></tr><tr><td>Script</td><td>rules</td></tr></tbody></table><p>after</p>", tb)
+  const op = md("Q1 (DR-1): closed by default. a) keep (recommended) b) allow every address c) rate-limit only").map(flat).join("")
+  check("question card: inline a) b) c) choices become one bullet each",
+    op === "<p>Q1 (DR-1): closed by default.</p><ul><li>a) keep (recommended)</li><li>b) allow every address</li><li>c) rate-limit only</li></ul>", op)
+  const ol = md("- Q2: pick one a) x b) y").map(flat).join("")
+  check("question card: choices inside a list item nest under it", ol === "<ul><li>Q2: pick one<ul><li>a) x</li><li>b) y</li></ul></li></ul>", ol)
+  check("question card: a lone b) or a) alone is not split", md("see note b) here").map(flat).join("") === "<p>see note b) here</p>" && md("only a) one").map(flat).join("") === "<p>only a) one</p>")
   check("question card: text is never parsed as HTML", md("<b>x</b> & y").map(flat).join("") === "<p><b>x</b> & y</p>" && !mdSrc.includes("innerHTML"))
   const body = (t: string) => new Function("h", "document", mdSrc + "; return qBody")(fakeH, { createTextNode: (x: string) => x })(t)
   const qb = body("Plan it as framed?\n**Recommendation:** A — in scope.\n- one\n**Details**\n- scope\n- unknowns").map(flat).join("")
