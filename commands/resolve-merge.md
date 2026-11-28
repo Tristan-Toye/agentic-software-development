@@ -163,18 +163,19 @@ end with `RUNNER: DONE`; the merge queue merges next.
 When the head branch is the stub itself (the stub's pull request into
 development, whose head is `stub/<date>`), the stub's branch rule refuses a
 direct push (GH013: changes must go through a pull request). That refusal is
-expected, never an owner question. Push the merge to a side branch
-`sync/<stub-branch-with-dashes>-<YYYY-MM-DD>` (`git push origin HEAD:refs/heads/sync/...`,
-a fresh name, never `--force`), open a pull request from it into the stub
-(`gh pr create --base <stub> --head sync/...`, title `Sync <stub> with
-development`, body: the conflicted files and how each was resolved, the test
-and gate results), and turn on auto-merge with a merge commit:
-`gh pr merge <n> --auto --merge` (never `--squash` or `--rebase`, so the
-merge of development stays a real merge and the stub PR's conflict goes away).
-Then wait for the sync pull request's CI with `wait_ci.py --pr <n>` as above; when
-the checks pass GitHub merges it and the stub's pull request picks the merge up.
-A red check is fixed on the sync branch and pushed again. When the repository
-refuses auto-merge (its `allow_auto_merge` is off), leave the pull request open,
+expected, never an owner question. Land it in one call, from the worktree that
+holds the committed merge:
+`python3 ${PLUGIN_ROOT}/scripts/stub_sync_pr.py --root <worktree> --stub <stub> --body-file <note>`
+(the note: the conflicted files and how each was resolved, the test and gate
+results). It pushes HEAD to a side branch `sync/<stub-with-dashes>-<YYYY-MM-DD>`
+(never `--force`), opens the pull request into the stub titled `Sync <stub>
+with development` (or reuses the open one), turns on auto-merge with a merge
+commit (never squash or rebase, so the stub PR's conflict goes away) and waits
+for its CI; it is safe to run again. Its last line is `SYNC-PR: #<n> <url>
+auto-merge=<on|off> ci=<green|red|pending|skipped>`; when the checks pass
+GitHub merges it and the stub's pull request picks the merge up. Do not run
+these steps by hand. A red check (exit 1, `ci=red`) is fixed with a new commit in the same worktree, then the same call again. When it reports
+`auto-merge=off` (the repository's `allow_auto_merge` is off), leave the pull request open,
 say so in one line of the note, and end: the owner merges it. The owner answered
 this once (config-harness Q12, 2026-11-28); never ask it again.
 
